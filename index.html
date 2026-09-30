@@ -1,0 +1,3054 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>揚力ラボ — 飛行機はなぜ飛ぶのか</title>
+<meta name="description" content="パネル法・揚力線理論・3自由度運動方程式で揚力の仕組みを学ぶ 3D シミュレーション教材">
+<!--
+  揚力ラボ（高校〜大学初年級向け教材）
+  ───────────────────────────────────
+  ・物理エンジン AeroLab（下の通常 <script>）は Three.js に依存しない純粋な計算コード。
+      NACA 4桁翼型 → 線形渦パネル法 → 失速モデル → 揚力線理論 → 縦3自由度(RK4, 120Hz)
+  ・描画と UI（下の <script type="module">）は AeroLab の出力を「読むだけ」。
+  ・外部ライブラリはバージョン固定で jsDelivr から読み込む（importmap）。
+-->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/",
+    "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20.0/dist/lil-gui.esm.min.js",
+    "chart.js": "https://cdn.jsdelivr.net/npm/chart.js@4.4.6/+esm"
+  }
+}
+</script>
+<style>
+  :root {
+    --bg: #0a111d;
+    --panel: rgba(12, 19, 32, 0.84);
+    --panel-solid: #0f1828;
+    --line: rgba(140, 170, 215, 0.2);
+    --text: #e7eef7;
+    --muted: #97a8be;
+    --accent: #5cc8ff;
+    --accent-2: #ffc542;
+    --ok: #3ddc84;
+    --ng: #ff6b6b;
+    --col-L: #3ddc84;
+    --col-D: #ff7a45;
+    --col-W: #b98cff;
+    --col-T: #ffc542;
+    --radius: 10px;
+    font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif;
+    font-size: 14px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
+  #app { position: fixed; inset: 0; }
+  #app canvas { display: block; touch-action: none; outline: none; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ---------- 上部バー ---------- */
+  #topbar {
+    position: fixed; top: 10px; left: 10px; right: 292px; display: flex; flex-wrap: wrap; gap: 8px;
+    align-items: center; pointer-events: none; z-index: 5;
+  }
+  #topbar > * { pointer-events: auto; }
+  .brand { padding: 7px 12px; line-height: 1.2; }
+  .brand b { font-size: 16px; letter-spacing: 0.04em; }
+  .brand span { display: block; font-size: 11px; color: var(--muted); }
+  .seg { display: inline-flex; padding: 3px; gap: 2px; }
+  .seg button {
+    background: transparent; border: 0; padding: 6px 11px; border-radius: 7px; color: var(--muted); white-space: nowrap;
+  }
+  .seg button:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+  .seg button.on { background: rgba(92, 200, 255, 0.18); color: #fff; box-shadow: inset 0 0 0 1px rgba(92, 200, 255, 0.45); }
+  .btn {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 8px 13px; white-space: nowrap;
+    backdrop-filter: blur(8px);
+  }
+  .btn:hover { border-color: rgba(92, 200, 255, 0.6); }
+  .btn.primary { background: linear-gradient(180deg, #2a7fd4, #1d5fa8); border-color: #4ea3f5; color: #fff; font-weight: 600; }
+  .btn.small { padding: 6px 10px; font-size: 12px; }
+  #btnTest.ok { color: var(--ok); }
+  #btnTest.ng { color: var(--ng); }
+
+  /* ---------- HUD（右上） ---------- */
+  #hud { position: fixed; top: 10px; right: 10px; width: 272px; padding: 10px 12px 8px; z-index: 5; }
+  .hud-main { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+  .hud-main .m { display: flex; flex-direction: column; padding: 5px 7px; border-radius: 7px; background: rgba(255, 255, 255, 0.035); }
+  .hud-main .k { font-size: 11px; color: var(--muted); }
+  .hud-main .v { font-size: 19px; font-weight: 650; letter-spacing: 0.01em; }
+  .hud-main .v small { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+  .hud-main .m.L .k { color: var(--col-L); }
+  .hud-main .m.D .k { color: var(--col-D); }
+  .hud-sub { margin-top: 8px; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; color: var(--muted); }
+  .hud-sub b { color: var(--text); font-weight: 500; text-align: right; }
+  .hud-state { margin-top: 6px; font-size: 12px; padding: 4px 7px; border-radius: 6px; background: rgba(92, 200, 255, 0.1); color: #cfe9ff; }
+  .hud-state.warn { background: rgba(255, 107, 107, 0.16); color: #ffd0d0; }
+
+  /* ---------- lil-gui の置き場所（HUD の下） ---------- */
+  #gui-wrap {
+    position: fixed; right: 10px; width: 272px; top: var(--hb, 300px); bottom: 10px; overflow-y: auto; z-index: 5;
+    scrollbar-width: thin;
+  }
+  #gui-wrap .lil-gui.root { width: 100%; --background-color: rgba(12, 19, 32, 0.9); --widget-color: #1d2a40; --hover-color: #263654;
+    --focus-color: #2d4166; --number-color: #7fd0ff; --string-color: #a6e3a1; --title-background-color: #16223a;
+    --font-family: inherit; --font-size: 12px; --input-font-size: 12px; --name-width: 46%; border-radius: var(--radius); overflow: hidden;
+    border: 1px solid var(--line); }
+  #guiToggle { display: none; }
+
+  /* ---------- 凡例（左） ---------- */
+  #legend { position: fixed; left: 10px; top: var(--tb, 118px); padding: 9px 10px; z-index: 4; width: 132px; }
+  #legend .t { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  #legend .t small { display: block; font-weight: 400; color: var(--muted); font-size: 10.5px; }
+  .lg-body { position: relative; height: 160px; display: flex; gap: 6px; }
+  .lg-bar { width: 14px; border-radius: 4px; height: 100%; }
+  .lg-ticks { position: relative; flex: 1; font-size: 10.5px; }
+  .lg-ticks div { position: absolute; left: 0; transform: translateY(-50%); white-space: nowrap; }
+  .lg-ticks div span { color: var(--muted); }
+  #legend .note { margin-top: 7px; font-size: 10.5px; color: var(--muted); line-height: 1.45; }
+
+  /* ---------- グラフ（左下） ---------- */
+  #charts { position: fixed; left: 10px; bottom: 10px; width: 410px; z-index: 4; padding: 6px 8px 6px; }
+  #charts .tabs { display: flex; gap: 2px; align-items: center; }
+  #charts .tabs button { background: transparent; border: 0; padding: 5px 10px; border-radius: 7px; color: var(--muted); font-size: 12.5px; }
+  #charts .tabs button.on { background: rgba(92, 200, 255, 0.16); color: #fff; }
+  #charts .tabs .sp { flex: 1; }
+  #charts .chart-wrap { position: relative; height: 230px; display: none; }
+  #charts .chart-wrap.on { display: block; }
+  #charts .note { font-size: 10.5px; color: var(--muted); min-height: 14px; padding: 2px 2px 0; }
+  #charts.collapsed .chart-wrap, #charts.collapsed .note { display: none !important; }
+
+  /* ---------- 情報パネル（下中央） ---------- */
+  #info {
+    position: fixed; left: 432px; right: 294px; bottom: 10px; z-index: 4; padding: 9px 12px; font-size: 13px; line-height: 1.5;
+    max-width: 760px; margin: 0 auto;
+  }
+  #info:empty { display: none; }
+  #info h3 { margin: 0 0 5px; font-size: 13px; color: var(--accent); font-weight: 650; }
+  #info .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; }
+  .chain { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .chain .c { padding: 5px 8px; border-radius: 7px; background: rgba(255, 255, 255, 0.04); border: 1px solid transparent; font-size: 12px; transition: all 0.25s; }
+  .chain .c b { display: block; font-size: 11px; color: var(--muted); font-weight: 500; }
+  .chain .c.on { background: rgba(61, 220, 132, 0.14); border-color: rgba(61, 220, 132, 0.5); }
+  .chain .arr { color: var(--muted); }
+  .bar { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.08); overflow: hidden; margin-top: 4px; }
+  .bar i { display: block; height: 100%; background: var(--col-L); }
+  .kv { display: inline-block; margin-right: 12px; }
+  .kv em { font-style: normal; color: var(--muted); }
+  .hl-up { color: #ffe066; font-weight: 600; }
+  .hl-lo { color: #ff8ad8; font-weight: 600; }
+
+  /* ---------- ステップ解説 ---------- */
+  #tour {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 124px; width: min(640px, calc(100vw - 20px)); z-index: 8;
+    padding: 12px 14px 10px;
+  }
+  #tour[hidden] { display: none; }
+  .tour-head { display: flex; align-items: center; gap: 10px; }
+  .tour-head h2 { margin: 0; font-size: 17px; flex: 1; }
+  .tour-step { font-size: 12px; color: var(--accent); border: 1px solid rgba(92, 200, 255, 0.4); border-radius: 20px; padding: 2px 9px; }
+  .tour-body { margin: 8px 0 10px; font-size: 13.5px; line-height: 1.7; }
+  .tour-body p { margin: 0 0 6px; }
+  .tour-body .live { margin-top: 6px; padding: 6px 9px; border-radius: 7px; background: rgba(92, 200, 255, 0.08); font-size: 12.5px; }
+  .tour-nav { display: flex; align-items: center; gap: 10px; }
+  .tour-nav .dots { flex: 1; display: flex; gap: 6px; justify-content: center; }
+  .tour-nav .dots i { width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 255, 255, 0.2); cursor: pointer; }
+  .tour-nav .dots i.on { background: var(--accent); }
+  .xbtn { background: transparent; border: 0; color: var(--muted); font-size: 20px; line-height: 1; padding: 2px 6px; }
+
+  /* ---------- 力のラベルなど ---------- */
+  #labels { position: fixed; inset: 0; pointer-events: none; z-index: 3; overflow: hidden; }
+  .flabel {
+    position: absolute; left: 0; top: 0; padding: 2px 6px; border-radius: 5px; font-size: 12px; white-space: nowrap;
+    background: rgba(8, 13, 22, 0.72); border: 1px solid rgba(255, 255, 255, 0.12); will-change: transform;
+  }
+  .flabel.L { color: var(--col-L); } .flabel.D { color: var(--col-D); } .flabel.W { color: var(--col-W); } .flabel.T { color: var(--col-T); }
+  .flabel.plain { background: transparent; border: 0; color: #cfe0f2; text-shadow: 0 1px 3px #000; }
+  .flabel.dim { color: var(--muted); background: transparent; border: 0; font-size: 11px; }
+
+  /* ---------- セルフテスト ---------- */
+  #testPanel {
+    position: fixed; left: 50%; top: 60px; transform: translateX(-50%); width: min(720px, calc(100vw - 20px)); max-height: calc(100vh - 80px);
+    overflow: auto; z-index: 20; padding: 12px 14px; background: var(--panel-solid);
+  }
+  #testPanel[hidden] { display: none; }
+  #testPanel table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  #testPanel td { padding: 5px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+  #testPanel td.s { width: 26px; text-align: center; font-weight: 700; }
+  #testPanel td.s.ok { color: var(--ok); } #testPanel td.s.ng { color: var(--ng); }
+  #testPanel td.d { color: var(--muted); }
+  #testPanel .head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  #testPanel .head b { flex: 1; font-size: 15px; }
+  #testPanel p { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+
+  #toast {
+    position: fixed; left: 50%; top: 64px; transform: translateX(-50%); z-index: 30; padding: 8px 16px; border-radius: 20px;
+    background: rgba(20, 40, 70, 0.92); border: 1px solid rgba(92, 200, 255, 0.5); font-weight: 600; opacity: 0; transition: opacity 0.35s;
+    pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+  #perf { position: fixed; right: 292px; bottom: 6px; font-size: 10.5px; color: rgba(151, 168, 190, 0.8); z-index: 3; pointer-events: none; }
+  #fatal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 50; background: var(--bg); padding: 24px; text-align: center; line-height: 1.7; }
+
+  /* ---------- スマホ・狭い画面 ---------- */
+  @media (max-width: 1279px) and (min-width: 901px) {
+    #charts { width: 350px; }
+    #charts .chart-wrap { height: 200px; }
+    #info { left: 370px; font-size: 12px; }
+  }
+  @media (max-height: 760px) and (min-width: 901px) {
+    #legend .note { display: none; }
+    .lg-body { height: 120px; }
+    #charts .chart-wrap { height: 180px; }
+  }
+  /* スマホ・狭い画面。JS が --tb（上部バー下端）, --hb（HUD 下端）, --cb（グラフ枠の高さ）を設定する */
+  @media (max-width: 900px) {
+    #topbar { right: 10px; gap: 6px; }
+    .brand { padding: 6px 10px; }
+    .brand span { display: none; }
+    #hud { left: 10px; right: 10px; width: auto; top: var(--tb, 58px); padding: 6px 8px; }
+    .hud-main { grid-template-columns: repeat(3, 1fr); gap: 4px; }
+    .hud-main .m { padding: 2px 6px; }
+    .hud-main .k { font-size: 10px; }
+    .hud-main .v { font-size: 15px; }
+    .hud-sub { display: none; }
+    .hud-state { margin-top: 4px; font-size: 11px; padding: 2px 6px; }
+    #gui-wrap { display: none; top: var(--hb, 160px); left: 10px; right: 10px; width: auto; bottom: 10px; z-index: 12; }
+    #gui-wrap.open { display: block; }
+    #guiToggle { display: inline-block; }
+    #legend { top: var(--hb, 160px); width: 100px; padding: 6px 7px; }
+    #legend .t { font-size: 11px; margin-bottom: 4px; }
+    .lg-body { height: 96px; }
+    .lg-ticks div span, .lg-ticks .minor { display: none; }
+    #legend .note { display: none; }
+    #charts { left: 10px; right: 10px; width: auto; bottom: 10px; padding: 4px 6px; }
+    #charts .chart-wrap { height: min(190px, 30vh); }
+    #info { left: 10px; right: 10px; bottom: calc(var(--cb, 44px) + 18px); font-size: 11.5px; padding: 6px 9px; max-height: 27vh; overflow: auto; max-width: none; }
+    #tour { bottom: 10px; max-height: 62vh; overflow: auto; }
+    #tour .tour-body { font-size: 12.5px; line-height: 1.6; }
+    #perf { display: none; }
+    .flabel { font-size: 10.5px; }
+  }
+  @media (max-width: 900px) and (orientation: landscape) {
+    .hud-main { grid-template-columns: repeat(6, 1fr); }
+    .hud-state { display: none; }
+    .lg-body { height: 64px; }
+    #legend .t small { display: none; }
+    #info { left: 120px; max-height: 30vh; }
+  }
+  @media (max-height: 540px) and (orientation: landscape) {
+    #tour { left: auto; right: 10px; transform: none; top: var(--hb, 120px); bottom: 10px; width: min(460px, 58vw); overflow: auto; }
+    #tour .tour-body { font-size: 12px; line-height: 1.55; }
+  }
+  @media (max-width: 520px) {
+    .seg button { padding: 5px 7px; font-size: 12px; }
+    .btn { padding: 6px 9px; font-size: 12px; }
+    #btnTest { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<header id="topbar">
+  <div class="brand panel"><b>揚力ラボ</b><span>飛行機はなぜ飛ぶのか ― パネル法 × 揚力線理論 × 3自由度シミュレーション</span></div>
+  <div class="seg panel" id="viewSeg" role="group" aria-label="ビュー">
+    <button data-view="3d" class="on">3D 全機</button><button data-view="sec">翼断面 2D</button>
+  </div>
+  <div class="seg panel" id="modeSeg" role="group" aria-label="モード">
+    <button data-mode="tunnel" class="on">風洞</button><button data-mode="powered">(A) 動力飛行</button><button data-mode="glide">(B) 滑空</button>
+  </div>
+  <button class="btn primary" id="btnTour">▶ ステップ解説</button>
+  <button class="btn small" id="btnTest" title="数値計算のセルフテスト結果">セルフテスト …</button>
+  <button class="btn small" id="guiToggle">⚙ 操作</button>
+</header>
+
+<aside id="hud" class="panel num" aria-live="off">
+  <div class="hud-main">
+    <div class="m L"><span class="k">揚力 L</span><span class="v" id="hL">–</span></div>
+    <div class="m D"><span class="k">抗力 D</span><span class="v" id="hD">–</span></div>
+    <div class="m"><span class="k">揚抗比 L/D</span><span class="v" id="hLD">–</span></div>
+    <div class="m"><span class="k">迎角 α</span><span class="v" id="hA">–</span></div>
+    <div class="m"><span class="k">対気速度 V</span><span class="v" id="hV">–</span></div>
+    <div class="m"><span class="k">沈下率</span><span class="v" id="hS">–</span></div>
+  </div>
+  <div class="hud-sub" id="hSub"></div>
+  <div class="hud-state" id="hState">–</div>
+</aside>
+
+<div id="gui-wrap"></div>
+
+<div id="legend" class="panel">
+  <div class="t">圧力係数 Cp<small>= 1 − (V/V∞)²</small></div>
+  <div class="lg-body"><div class="lg-bar" id="lgBar"></div><div class="lg-ticks num" id="lgTicks"></div></div>
+  <div class="note">青：負圧（流れが速い）<br>赤：正圧（流れが遅い）<br>翼面と流れの粒子は同じ色で表示</div>
+</div>
+
+<section id="charts" class="panel">
+  <div class="tabs">
+    <button data-chart="cp" class="on">Cp 分布</button><button data-chart="cla">Cl–α 曲線</button><button data-chart="polar">極曲線</button>
+    <span class="sp"></span><button id="chartsToggle" title="グラフを折りたたむ">▾</button>
+  </div>
+  <div class="chart-wrap on" data-chart="cp"><canvas id="chartCp"></canvas></div>
+  <div class="chart-wrap" data-chart="cla"><canvas id="chartCla"></canvas></div>
+  <div class="chart-wrap" data-chart="polar"><canvas id="chartPolar"></canvas></div>
+  <div class="note" id="chartNote"></div>
+</section>
+
+<div id="info" class="panel"></div>
+
+<div id="tour" class="panel" hidden>
+  <div class="tour-head"><span class="tour-step" id="tourStep">1 / 5</span><h2 id="tourTitle"></h2><button class="xbtn" id="tourClose" aria-label="閉じる">×</button></div>
+  <div class="tour-body" id="tourBody"></div>
+  <div class="tour-nav"><button class="btn small" id="tourPrev">◀ 前へ</button><div class="dots" id="tourDots"></div><button class="btn small primary" id="tourNext">次へ ▶</button></div>
+</div>
+
+<div id="labels"></div>
+
+<div id="testPanel" class="panel" hidden>
+  <div class="head"><b>セルフテスト（数値計算の検証）</b><button class="xbtn" id="testClose" aria-label="閉じる">×</button></div>
+  <p>起動時に物理エンジンの結果を理論値と比較しています。Cl–α の傾き ≈ 2π/rad（薄翼理論）、クッタ条件、揚力線理論、ビオ・サバール、飛行力学の整合性を確認します。</p>
+  <table id="testTable"></table>
+</div>
+<div id="toast"></div>
+<div id="perf" class="num"></div>
+<div id="fatal"></div>
+<script>
+/* =====================================================================
+ *  AeroLab 物理エンジン（描画に一切依存しない純粋な計算モジュール）
+ *  ---------------------------------------------------------------------
+ *  座標の約束（翼断面）: 前縁 x=0, 後縁 x=1（翼弦長 c=1 で無次元化）,
+ *                       y は上向き。一様流は (cosα, sinα)（左→右）。
+ *  3 次元の機体座標  : x = 機尾方向, y = 上, z = スパン方向。
+ *                       原点は翼根の 1/4 翼弦点（ほぼ重心）。
+ *  すべて SI 単位（m, s, kg, N, rad）。
+ * ===================================================================== */
+(function (global) {
+  'use strict';
+
+  const DEG = Math.PI / 180;
+  const G0 = 9.80665;                       // 重力加速度 [m/s²]
+  const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+  const smoothstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+
+  /* ------------------------------------------------------------------
+   * 0. 小さな線形代数（部分ピボット付き LU 分解）
+   * ------------------------------------------------------------------ */
+  function luFactor(rows) {
+    const n = rows.length, A = rows, piv = new Int32Array(n);
+    for (let i = 0; i < n; i++) piv[i] = i;
+    for (let k = 0; k < n; k++) {
+      let p = k, max = Math.abs(A[k][k]);
+      for (let i = k + 1; i < n; i++) { const v = Math.abs(A[i][k]); if (v > max) { max = v; p = i; } }
+      if (max < 1e-300) throw new Error('行列が特異です');
+      if (p !== k) { const t = A[p]; A[p] = A[k]; A[k] = t; const tp = piv[p]; piv[p] = piv[k]; piv[k] = tp; }
+      const rk = A[k], akk = rk[k];
+      for (let i = k + 1; i < n; i++) {
+        const ri = A[i], f = ri[k] / akk;
+        ri[k] = f;
+        if (f !== 0) for (let j = k + 1; j < n; j++) ri[j] -= f * rk[j];
+      }
+    }
+    return { LU: A, piv };
+  }
+  function luSolve(F, b) {
+    const { LU, piv } = F, n = LU.length, x = new Float64Array(n);
+    for (let i = 0; i < n; i++) x[i] = b[piv[i]];
+    for (let i = 0; i < n; i++) { const r = LU[i]; let s = x[i]; for (let j = 0; j < i; j++) s -= r[j] * x[j]; x[i] = s; }
+    for (let i = n - 1; i >= 0; i--) { const r = LU[i]; let s = x[i]; for (let j = i + 1; j < n; j++) s -= r[j] * x[j]; x[i] = s / r[i]; }
+    return x;
+  }
+  const solveDense = (M, b) => luSolve(luFactor(M.map((r) => Float64Array.from(r))), b);
+
+  /* ------------------------------------------------------------------
+   * 1. 国際標準大気 (ISA)：高度 → 温度・圧力・密度・粘性係数
+   * ------------------------------------------------------------------ */
+  const Atmosphere = {
+    R: 287.053,
+    at(h) {
+      h = clamp(h, -500, 20000);
+      let T, p;
+      if (h <= 11000) { T = 288.15 - 0.0065 * h; p = 101325 * Math.pow(T / 288.15, 5.255877); }
+      else { T = 216.65; p = 22632.06 * Math.exp(-G0 * (h - 11000) / (287.053 * 216.65)); }
+      const rho = p / (287.053 * T);
+      const mu = 1.458e-6 * Math.pow(T, 1.5) / (T + 110.4);   // サザーランドの式
+      return { h, T, p, rho, mu };
+    },
+  };
+
+  /* ------------------------------------------------------------------
+   * 2. NACA 4 桁翼型の生成
+   *    例 "2412": 最大キャンバー 2%、その位置 40%、最大厚さ 12%
+   *    節点は「後縁(下面) → 前縁 → 後縁(上面)」の時計回り。
+   *    x は余弦間隔（前縁・後縁付近を細かく）。後縁は閉じた形（係数 −0.1036）。
+   * ------------------------------------------------------------------ */
+  class NacaAirfoil {
+    static parse(code) {
+      const s = String(code).trim();
+      if (!/^\d{4}$/.test(s)) return null;
+      const m = +s[0] / 100, p = +s[1] / 10, t = +s.slice(2) / 100;
+      if (t < 0.01 || t > 0.3) return null;
+      if (m > 0 && p === 0) return null;
+      return { code: s, m, p, t };
+    }
+    constructor(code, nPanels = 150) {
+      const prm = NacaAirfoil.parse(code);
+      if (!prm) throw new Error('NACA 4桁の番号が不正です: ' + code);
+      Object.assign(this, prm);
+      if (nPanels % 2) nPanels++;
+      const nh = nPanels / 2, N1 = nPanels + 1;
+      this.nPanels = nPanels; this.leIndex = nh;
+      this.x = new Float64Array(N1); this.y = new Float64Array(N1);
+      this.isUpper = new Uint8Array(N1);
+      const st = [];
+      for (let k = 0; k <= nh; k++) {
+        const xc = 0.5 * (1 - Math.cos(Math.PI * k / nh));
+        const yt = this.thickness(xc), { yc, dyc } = this.camber(xc), th = Math.atan(dyc);
+        st.push({ xu: xc - yt * Math.sin(th), yu: yc + yt * Math.cos(th), xl: xc + yt * Math.sin(th), yl: yc - yt * Math.cos(th) });
+      }
+      let i = 0;
+      for (let k = nh; k >= 0; k--) { this.x[i] = st[k].xl; this.y[i] = st[k].yl; i++; }
+      for (let k = 1; k <= nh; k++) { this.x[i] = st[k].xu; this.y[i] = st[k].yu; this.isUpper[i] = 1; i++; }
+    }
+    /** 厚さ分布 y_t(x)（片側） */
+    thickness(x) {
+      const t = this.t;
+      return 5 * t * (0.2969 * Math.sqrt(x) - 0.1260 * x - 0.3516 * x * x + 0.2843 * x * x * x - 0.1036 * x * x * x * x);
+    }
+    /** キャンバーライン y_c(x) とその傾き */
+    camber(x) {
+      const { m, p } = this;
+      if (m === 0 || p === 0) return { yc: 0, dyc: 0 };
+      if (x < p) return { yc: m / (p * p) * (2 * p * x - x * x), dyc: 2 * m / (p * p) * (p - x) };
+      const q = 1 - p;
+      return { yc: m / (q * q) * ((1 - 2 * p) + 2 * p * x - x * x), dyc: 2 * m / (q * q) * (p - x) };
+    }
+    /** 上面・下面の近似高さ（y_c ± y_t）。粒子の衝突判定用 */
+    upperY(x) { return this.camber(x).yc + this.thickness(x); }
+    lowerY(x) { return this.camber(x).yc - this.thickness(x); }
+  }
+
+  /* ------------------------------------------------------------------
+   * 3. 線形渦パネル法
+   *    翼面を N 枚の直線パネルに分け、各パネル上で渦度 γ(s) が線形に変化する
+   *    渦シートを置く。未知数は N+1 個の節点強さ γ_j。
+   *      ・N 個の条件：各パネル中点で「流れが翼面を貫かない」（法線速度 0）
+   *      ・1 個の条件：クッタ条件 γ_0 + γ_N = 0（後縁で流れが滑らかに離れる）
+   *    ここで γ は反時計回りを正とする。揚力を生む循環（時計回り）は Γ = −∮γ ds。
+   * ------------------------------------------------------------------ */
+
+  /** 局所座標（パネル始点が原点・パネル方向が x 軸・外向き法線が y 軸）での
+   *  長さ L の線形渦パネルの誘導速度。γ_a（始点）, γ_b（終点）の係数を返す。
+   *  点渦（反時計回り Γ）: u = −Γy/(2πr²), v = Γ(x−s)/(2πr²) を s で積分した解析式。 */
+  function linearVortexInfluence(x, y, L, selfPanel, out) {
+    let dth, lnr;
+    if (selfPanel) { dth = Math.PI; lnr = 0; }       // パネル自身の中点（外側 y→+0 の極限）
+    else {
+      dth = Math.atan2(y, x - L) - Math.atan2(y, x);
+      const r1s = Math.max(x * x + y * y, 1e-24), r2s = Math.max((x - L) * (x - L) + y * y, 1e-24);
+      lnr = 0.5 * Math.log(r1s / r2s);
+    }
+    const Iy0 = dth, Iy1 = x * dth - y * lnr, Ix0 = lnr, Ix1 = x * lnr - L + y * dth;
+    const k = 1 / (2 * Math.PI);
+    out[0] = -k * (Iy0 - Iy1 / L);   // u の γ_a 係数
+    out[1] = k * (Ix0 - Ix1 / L);    // v の γ_a 係数
+    out[2] = -k * (Iy1 / L);         // u の γ_b 係数
+    out[3] = k * (Ix1 / L);          // v の γ_b 係数
+  }
+
+  class VortexPanelSolver {
+    constructor(foil) {
+      this.foil = foil;
+      const X = foil.x, Y = foil.y, N = X.length - 1;
+      this.N = N;
+      const S = new Float64Array(N), ct = new Float64Array(N), st = new Float64Array(N);
+      const xm = new Float64Array(N), ym = new Float64Array(N);
+      for (let j = 0; j < N; j++) {
+        const dx = X[j + 1] - X[j], dy = Y[j + 1] - Y[j];
+        S[j] = Math.hypot(dx, dy); ct[j] = dx / S[j]; st[j] = dy / S[j];
+        xm[j] = 0.5 * (X[j] + X[j + 1]); ym[j] = 0.5 * (Y[j] + Y[j + 1]);
+      }
+      Object.assign(this, { S, ct, st, xm, ym });
+
+      // --- 影響係数行列：An = 法線方向, At = 接線方向 ---
+      const An = [], At = [], inf = new Float64Array(4);
+      for (let i = 0; i < N; i++) {
+        const an = new Float64Array(N + 1), at = new Float64Array(N + 1);
+        const nx = -st[i], ny = ct[i], tx = ct[i], ty = st[i];
+        for (let j = 0; j < N; j++) {
+          const self = i === j;
+          const dx = xm[i] - X[j], dy = ym[i] - Y[j];
+          const x = self ? 0.5 * S[j] : dx * ct[j] + dy * st[j];
+          const y = self ? 0 : -dx * st[j] + dy * ct[j];
+          linearVortexInfluence(x, y, S[j], self, inf);
+          const wax = inf[0] * ct[j] - inf[1] * st[j], way = inf[0] * st[j] + inf[1] * ct[j];
+          const wbx = inf[2] * ct[j] - inf[3] * st[j], wby = inf[2] * st[j] + inf[3] * ct[j];
+          an[j] += wax * nx + way * ny; an[j + 1] += wbx * nx + wby * ny;
+          at[j] += wax * tx + way * ty; at[j + 1] += wbx * tx + wby * ty;
+        }
+        An.push(an); At.push(at);
+      }
+      this.At = At;
+
+      // 節点の重み（循環 = Σ w_j γ_j）
+      const w = new Float64Array(N + 1);
+      for (let j = 0; j < N; j++) { w[j] += 0.5 * S[j]; w[j + 1] += 0.5 * S[j]; }
+      this.w = w;
+
+      // --- 系1：接線条件 + クッタ条件（α=0°, 90° の 2 つの右辺） ---
+      const M1 = An.map((r) => Float64Array.from(r));
+      const kutta = new Float64Array(N + 1); kutta[0] = 1; kutta[N] = 1;
+      M1.push(kutta);
+      const F1 = luFactor(M1);
+      const rhs0 = new Float64Array(N + 1), rhs90 = new Float64Array(N + 1);
+      for (let i = 0; i < N; i++) { rhs0[i] = st[i]; rhs90[i] = -ct[i]; }   // −V∞·n
+      this.g0 = luSolve(F1, rhs0);
+      this.g90 = luSolve(F1, rhs90);
+
+      // --- 系2：一様流なし・循環 Γ=1 の解（失速時に循環を減らす可視化用の基底） ---
+      const M2 = An.map((r) => Float64Array.from(r));
+      M2.push(Float64Array.from(w, (v) => -v));
+      const rhsG = new Float64Array(N + 1); rhsG[N] = 1;
+      this.gG = luSolve(luFactor(M2), rhsG);
+
+      // --- 各基底の翼面接線速度（パネル中点・外側） ---
+      const vt = (g, fx, fy) => {
+        const out = new Float64Array(N);
+        for (let i = 0; i < N; i++) {
+          let s = fx * ct[i] + fy * st[i];
+          const a = At[i];
+          for (let j = 0; j <= N; j++) s += a[j] * g[j];
+          out[i] = s;
+        }
+        return out;
+      };
+      this.vt0 = vt(this.g0, 1, 0);
+      this.vt90 = vt(this.g90, 0, 1);
+      this.vtG = vt(this.gG, 0, 0);
+
+      // クッタ・ジューコフスキー： Cl = 2Γ/(V∞c)。Cl(α) = Cl0·cosα + Cl90·sinα（厳密に重ね合わせ）
+      this.Cl0 = 2 * this.circulation(this.g0);
+      this.Cl90 = 2 * this.circulation(this.g90);
+      this._gbuf = new Float64Array(N + 1);
+      this._gKey = NaN;
+    }
+    circulation(g) { let s = 0; for (let j = 0; j <= this.N; j++) s += this.w[j] * g[j]; return -s; }
+    /** 非粘性の揚力係数（パネル法そのもの） */
+    clInviscid(a) { return this.Cl0 * Math.cos(a) + this.Cl90 * Math.sin(a); }
+    /** 迎角 a と循環補正 dG に対する節点渦強さ γ_j（翼面の流速 = |γ_j|） */
+    gamma(a, dG = 0, out = new Float64Array(this.N + 1)) {
+      const c = Math.cos(a), s = Math.sin(a);
+      for (let j = 0; j <= this.N; j++) out[j] = c * this.g0[j] + s * this.g90[j] + dG * this.gG[j];
+      return out;
+    }
+    /** パネル中点の圧力係数 Cp = 1 − (V/V∞)²（ベルヌーイの定理） */
+    surfaceCp(a, out = new Float64Array(this.N)) {
+      const c = Math.cos(a), s = Math.sin(a);
+      for (let i = 0; i < this.N; i++) { const v = c * this.vt0[i] + s * this.vt90[i]; out[i] = 1 - v * v; }
+      return out;
+    }
+    /** 圧力積分による力とモーメント（揚力の検算用） */
+    pressureForces(a) {
+      const cp = this.surfaceCp(a);
+      let fx = 0, fy = 0, mz = 0;
+      for (let i = 0; i < this.N; i++) {
+        const nx = -this.st[i], ny = this.ct[i];
+        const px = -cp[i] * nx * this.S[i], py = -cp[i] * ny * this.S[i];
+        fx += px; fy += py;
+        mz += (this.xm[i] - 0.25) * py - this.ym[i] * px;
+      }
+      return {
+        cl: -fx * Math.sin(a) + fy * Math.cos(a),
+        cd: fx * Math.cos(a) + fy * Math.sin(a),   // ポテンシャル流では 0（ダランベールのパラドックス）
+        cm: -mz,                                   // 1/4 翼弦まわり（頭上げ正）
+      };
+    }
+    /** 翼まわりの任意点の速度（一様流込み, V∞=1）。煙パルスの厳密な追跡に使う */
+    velocityAt(px, py, g, a, out) {
+      const X = this.foil.x, Y = this.foil.y, N = this.N, inf = this._inf || (this._inf = new Float64Array(4));
+      let u = Math.cos(a), v = Math.sin(a);
+      for (let j = 0; j < N; j++) {
+        const dx = px - X[j], dy = py - Y[j], c = this.ct[j], s = this.st[j];
+        linearVortexInfluence(dx * c + dy * s, -dx * s + dy * c, this.S[j], false, inf);
+        const ul = inf[0] * g[j] + inf[2] * g[j + 1], vl = inf[1] * g[j] + inf[3] * g[j + 1];
+        u += ul * c - vl * s; v += ul * s + vl * c;
+      }
+      out[0] = u; out[1] = v;
+      return out;
+    }
+    /** よどみ点（前縁付近で γ の符号が変わる位置） */
+    stagnationPoint(g) {
+      const X = this.foil.x, Y = this.foil.y, le = this.foil.leIndex, N = this.N;
+      for (let d = 0; d < N / 2 - 2; d++) {
+        for (const j of [le + d, le - d - 1]) {
+          if (j < 1 || j >= N - 1) continue;
+          if (g[j] * g[j + 1] <= 0) {
+            const t = g[j] / (g[j] - g[j + 1] || 1e-30);
+            return { x: X[j] + t * (X[j + 1] - X[j]), y: Y[j] + t * (Y[j + 1] - Y[j]), j };
+          }
+        }
+      }
+      return { x: X[le], y: Y[le], j: le };
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * 4. 断面（2次元翼）の空力モデル —— 失速を含む経験モデル
+   *    付着流の Cl はパネル法（非粘性）の値。
+   *    失速は Kirchhoff/Beddoes–Leishman の「はく離点モデル」で表す：
+   *       f(α) = 上面のはく離位置 x/c（1 = 全面付着, 0 = 前縁ではく離）
+   *       Cl = Cl_付着 × ((1+√f)/2)²
+   *    α > 20° では平板の実験式へ滑らかに移行。抗力は
+   *       Cd = 摩擦（Re 依存）×形状係数 + k(Cl − Cl_dmin)² + はく離による圧力抗力
+   * ------------------------------------------------------------------ */
+  class SectionModel {
+    constructor(panel) {
+      this.panel = panel; this.foil = panel.foil;
+      this.Cl0 = panel.Cl0; this.Cl90 = panel.Cl90;
+      this.K = Math.hypot(this.Cl0, this.Cl90);
+      this.alpha0 = -Math.atan2(this.Cl0, this.Cl90);        // 零揚力角
+      this.a1 = 14 * DEG;                                       // 失速開始角（約14°）
+      this.S1 = 1.5 * DEG; this.S2 = 3.0 * DEG;                 // はく離の進み方
+      this.kProfile = 0.0055;
+      this.ClDmin = this.clAtt(0);
+      const t = this.foil.t;
+      this.FF = 1 + 2 * t + 100 * t * t * t * t;               // 形状係数（Raymer）
+      // 失速による揚力の減少分 ΔCl = Cl − Cl_付着 を表にしておく（揚力線理論の反復で何万回も呼ぶため）
+      this.tMin = -45 * DEG; this.tStep = 0.05 * DEG;
+      const n = Math.round((90 * DEG) / this.tStep) + 1;
+      this.tn = n;
+      this.tDs = new Float64Array(n); this.tDds = new Float64Array(n);
+      this.tCdSep = new Float64Array(n); this.tF = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        const a = this.tMin + i * this.tStep, r = this.evalRaw(a);
+        this.tDs[i] = r.cl - r.clAtt; this.tCdSep[i] = r.cdSep; this.tF[i] = r.f;
+      }
+      for (let i = 0; i < n; i++) {
+        const i0 = Math.max(0, i - 1), i1 = Math.min(n - 1, i + 1);
+        this.tDds[i] = (this.tDs[i1] - this.tDs[i0]) / ((i1 - i0) * this.tStep);
+      }
+      this._lk = { cl: 0, dcl: 0, cdv: 0, f: 1 };
+    }
+    /** 付着流部分（パネル法）とその傾き */
+    att(a, o) { const c = Math.cos(a), s = Math.sin(a); o.cl = this.Cl0 * c + this.Cl90 * s; o.dcl = -this.Cl0 * s + this.Cl90 * c; return o; }
+    /** 失速部分（表の線形補間）：ΔCl, dΔCl/dα, はく離点 f, はく離抗力 */
+    stall(a, o) {
+      let u = clamp((a - this.tMin) / this.tStep, 0, this.tn - 1.000001);
+      const i = u | 0, t = u - i;
+      o.ds = this.tDs[i] + t * (this.tDs[i + 1] - this.tDs[i]);
+      o.dds = this.tDds[i] + t * (this.tDds[i + 1] - this.tDds[i]);
+      o.f = this.tF[i] + t * (this.tF[i + 1] - this.tF[i]);
+      o.cdSep = this.tCdSep[i] + t * (this.tCdSep[i + 1] - this.tCdSep[i]);
+      return o;
+    }
+    clAtt(a) { return this.Cl0 * Math.cos(a) + this.Cl90 * Math.sin(a); }
+    /** はく離点 f(α)（Kirchhoff モデル, 正負対称） */
+    sepF(a) {
+      const x = Math.abs(a), a1 = this.a1;
+      if (x <= a1) return 1 - 0.3 * Math.exp((x - a1) / this.S1);
+      return 0.04 + 0.66 * Math.exp((a1 - x) / this.S2);
+    }
+    /** 平板（完全はく離）の法線力係数：Cn ≈ 1.98 sinα / (0.56 + 0.44|sinα|) */
+    cnFlatPlate(a) { const s = Math.sin(a); return 1.98 * s / (0.56 + 0.44 * Math.abs(s)); }
+    evalRaw(a) {
+      const f = this.sepF(a), F = ((1 + Math.sqrt(f)) / 2) ** 2;
+      const clA = this.clAtt(a), cn = this.cnFlatPlate(a);
+      const w = smoothstep(20 * DEG, 30 * DEG, Math.abs(a));
+      const cl = (1 - w) * clA * F + w * cn * Math.cos(a);
+      const fn = clamp((f - 0.04) / 0.96, 0, 1);
+      const cdSep = (1 - fn) * (1 - fn) * Math.abs(cn * Math.sin(a));
+      const cdLift = this.kProfile * (cl - this.ClDmin) ** 2;
+      return { cl, clAtt: clA, f, cdVar: cdLift + cdSep, cdSep };
+    }
+    /** 最小抗力（乱流平板摩擦 × 2 面 × 形状係数）。Re が小さいほど大きい */
+    cdMin(Re) {
+      const r = clamp(Re, 1e5, 1e8);
+      return 2 * (0.455 / Math.pow(Math.log10(r), 2.58)) * this.FF;
+    }
+    /** 2 次元翼としての値：cl, dcl/dα, 可変抗力（摩擦以外）, はく離点 */
+    lookup(a, out = this._lk) {
+      const st = this.stall(a, this._st || (this._st = {})), at = this.att(a, this._at || (this._at = {}));
+      out.cl = at.cl + st.ds; out.dcl = at.dcl + st.dds; out.f = st.f;
+      out.cdv = this.kProfile * (out.cl - this.ClDmin) ** 2 + st.cdSep;
+      return out;
+    }
+    cd(a, Re) { return this.cdMin(Re) + this.lookup(a).cdv; }
+    /** 表示用の Cp 分布（節点ごと, 2 次元翼として迎角 a）。 */
+    nodeCp(a, out) { const r = this.lookup(a); return this.cpFromState(r.cl, r.f, a >= 0, out); }
+    /** 実際の Cl とはく離点 f から Cp 分布を作る。
+     *  付着流：その Cl を与える迎角 α_v でのパネル法の Cp（= 1 − γ²）。
+     *  失速時は「経験的な模式表示」：はく離点より後ろの上面（負迎角では下面）を
+     *  一定圧力（はく離域の圧力台地）にする。 */
+    cpFromState(cl, f, upperSide, out = new Float64Array(this.panel.N + 1)) {
+      const P = this.panel, N = P.N, foil = this.foil, X = foil.x;
+      const av = this.alpha0 + Math.asin(clamp(cl / this.K, -1, 1));
+      const c = Math.cos(av), s = Math.sin(av);
+      for (let j = 0; j <= N; j++) { const g = c * P.g0[j] + s * P.g90[j]; out[j] = 1 - g * g; }
+      if (f < 0.985) {
+        const le = foil.leIndex, dir = upperSide ? 1 : -1, end = upperSide ? N : 0;
+        let cpS = null;
+        for (let j = le; j !== end + dir; j += dir) {
+          if (cpS === null) { if (X[j] >= f) cpS = out[j]; }
+          else out[j] = cpS;
+        }
+      }
+      return out;
+    }
+    /** 可視化用：失速で失われた循環（単位循環基底の係数） */
+    circulationDeficit(a) { return 0.5 * (this.lookup(a).cl - this.clAtt(a)); }
+  }
+
+  /* ------------------------------------------------------------------
+   * 5. プラントルの揚力線理論（非線形版）
+   *    スパン方向 y = −(b/2)cosθ、循環 Γ(θ) = 2bV Σ A_n sin(nθ)（左右対称 → n は奇数）
+   *    吹き下ろし角 α_i(θ) = Σ n A_n sin(nθ)/sinθ
+   *    各断面：Γ = ½ V c Cl(α − α_i)  を満たす A_n をニュートン法で解く。
+   *    CL = πAR·A1,  CDi = πAR·Σ n A_n²（誘導抗力）
+   *    失速後は断面の Cl 傾斜が負になり解が一意でなくなる（隣り合う断面が交互に失速する
+   *    非物理的な解）。そこで失速による減少分 ΔCl だけを翼弦程度の幅でスパン方向に平滑化した
+   *    有効迎角 ᾱ で評価する（人工粘性の一種）。失速前は ΔCl ≈ 0 なので古典理論と一致する。
+   * ------------------------------------------------------------------ */
+  class LiftingLine {
+    constructor(section, { AR, S, planform = 'rect', taper = 0.45, K = 20, aMin = -16, aMax = 30, aStep = 0.25 }) {
+      this.sec = section; this.AR = AR; this.S = S; this.b = Math.sqrt(AR * S);
+      this.planform = planform; this.taper = planform === 'taper' ? taper : 1;
+      this.cRoot = planform === 'ellipse' ? 4 * S / (Math.PI * this.b) : 2 * S / (this.b * (1 + this.taper));
+      this.K = K;
+      this.n = Int32Array.from({ length: K }, (_, i) => 2 * i + 1);
+      this.theta = Float64Array.from({ length: K }, (_, k) => ((k + 1) * Math.PI) / (2 * K));
+      this.sinT = []; this.ratio = []; this.mu = new Float64Array(K);
+      for (let k = 0; k < K; k++) {
+        const th = this.theta[k], s = new Float64Array(K), r = new Float64Array(K);
+        for (let i = 0; i < K; i++) { s[i] = Math.sin(this.n[i] * th); r[i] = (this.n[i] * s[i]) / Math.sin(th); }
+        this.sinT.push(s); this.ratio.push(r);
+        this.mu[k] = this.chord(Math.cos(th)) / (4 * this.b);
+      }
+      // 平均空力翼弦 MAC = (2/S)∫c² dy
+      let m = 0; const nm = 400;
+      for (let i = 0; i < nm; i++) { const e = (i + 0.5) / nm, c = this.chord(e); m += c * c * (this.b / 2) / nm; }
+      this.mac = (2 / S) * m;
+      this.sigma = 0.6 * this.mac;                      // 失速分の平滑化幅
+      this.Wk = this.smoothMatrix(this.theta);
+      // WR = W·r（平滑化した有効迎角の A_n による微分）
+      this.WR = this.Wk.map((wrow) => {
+        const out = new Float64Array(K);
+        for (let j = 0; j < K; j++) { const rj = this.ratio[j]; for (let i = 0; i < K; i++) out[i] += wrow[j] * rj[i]; }
+        return out;
+      });
+      this.nInt = 64;                                   // スパン積分用の θ 中点
+      this.thInt = Float64Array.from({ length: this.nInt }, (_, j) => ((j + 0.5) * Math.PI) / (2 * this.nInt));
+      this.Wint = this.smoothMatrix(this.thInt);
+      this.buildTable(aMin * DEG, aMax * DEG, aStep * DEG);
+    }
+    /** θ の点列（半翼）に対するガウス平滑化行列（翼根に対する鏡像を含む） */
+    smoothMatrix(thetas) {
+      const n = thetas.length, hb = this.b / 2, y = Array.from(thetas, (t) => hb * Math.cos(t)), dy = [];
+      for (let j = 0; j < n; j++) {
+        const a = y[Math.max(0, j - 1)], c = y[Math.min(n - 1, j + 1)];
+        dy.push(Math.abs(c - a) / (j > 0 && j < n - 1 ? 2 : 1) + 1e-9);   // 点が受け持つ幅
+      }
+      const s2 = 2 * this.sigma * this.sigma;
+      return y.map((yk) => {
+        const row = new Float64Array(n); let sum = 0;
+        for (let j = 0; j < n; j++) {
+          row[j] = (Math.exp(-((yk - y[j]) ** 2) / s2) + Math.exp(-((yk + y[j]) ** 2) / s2)) * dy[j];
+          sum += row[j];
+        }
+        for (let j = 0; j < n; j++) row[j] /= sum;
+        return row;
+      });
+    }
+    /** 翼弦長 c(η), η = |2y/b| */
+    chord(eta) {
+      if (this.planform === 'ellipse') return this.cRoot * Math.sqrt(Math.max(0, 1 - eta * eta));
+      return this.cRoot * (1 - (1 - this.taper) * eta);
+    }
+    aiAt(th, A) {
+      const s = Math.sin(th);
+      let v = 0;
+      if (s < 1e-6) { for (let i = 0; i < this.K; i++) v += this.n[i] * this.n[i] * A[i]; return v; }
+      for (let i = 0; i < this.K; i++) v += this.n[i] * A[i] * Math.sin(this.n[i] * th);
+      return v / s;
+    }
+    /** Γ/V∞ [m] */
+    gammaAt(th, A) { let v = 0; for (let i = 0; i < this.K; i++) v += A[i] * Math.sin(this.n[i] * th); return 2 * this.b * v; }
+    residual(alpha, A, R, J) {
+      const K = this.K, sec = this.sec, at = this._at || (this._at = {}), st = this._st || (this._st = {});
+      const G = this._G || (this._G = new Float64Array(K)), ae = this._ae || (this._ae = new Float64Array(K));
+      for (let k = 0; k < K; k++) {
+        const s = this.sinT[k], r = this.ratio[k];
+        let g = 0, ai = 0;
+        for (let i = 0; i < K; i++) { g += A[i] * s[i]; ai += A[i] * r[i]; }
+        G[k] = g; ae[k] = alpha - ai;
+      }
+      let nrm = 0;
+      for (let k = 0; k < K; k++) {
+        const w = this.Wk[k];
+        let abar = 0;
+        for (let j = 0; j < K; j++) abar += w[j] * ae[j];
+        sec.att(ae[k], at); sec.stall(abar, st);
+        R[k] = G[k] - this.mu[k] * (at.cl + st.ds);
+        nrm += R[k] * R[k];
+        if (J) {
+          const Jk = J[k], s = this.sinT[k], r = this.ratio[k], wr = this.WR[k];
+          for (let i = 0; i < K; i++) Jk[i] = s[i] + this.mu[k] * (at.dcl * r[i] + st.dds * wr[i]);
+        }
+      }
+      return Math.sqrt(nrm);
+    }
+    /** ニュートン法（直線探索付き）で A_n を求める */
+    solve(alpha, A0) {
+      const K = this.K;
+      const A = A0 ? Float64Array.from(A0) : new Float64Array(K);
+      const R = new Float64Array(K), R2 = new Float64Array(K), An = new Float64Array(K);
+      const J = Array.from({ length: K }, () => new Float64Array(K));
+      let nrm = this.residual(alpha, A, R, J), it = 0;
+      for (; it < 60 && nrm > 1e-13; it++) {
+        const d = solveDense(J, R);
+        let lam = 1, nNew = Infinity;
+        for (let ls = 0; ls < 14; ls++) {
+          for (let i = 0; i < K; i++) An[i] = A[i] - lam * d[i];
+          nNew = this.residual(alpha, An, R2, null);
+          if (nNew < nrm) break;
+          lam *= 0.5;
+        }
+        if (!(nNew < nrm)) break;
+        A.set(An);
+        nrm = this.residual(alpha, A, R, J);
+      }
+      return { A, residual: nrm, iterations: it };
+    }
+    /** 与えた θ 点列（半翼）での断面状態：有効迎角・平滑化迎角・Cl・はく離点・抗力・循環 */
+    stations(alpha, A, thetas, W) {
+      const n = thetas.length, sec = this.sec, at = {}, st = {};
+      const r = { theta: thetas, eta: new Float64Array(n), chord: new Float64Array(n), ai: new Float64Array(n), ae: new Float64Array(n),
+        abar: new Float64Array(n), cl: new Float64Array(n), clAtt: new Float64Array(n), f: new Float64Array(n), cdv: new Float64Array(n), gamma: new Float64Array(n) };
+      for (let k = 0; k < n; k++) {
+        r.eta[k] = Math.cos(thetas[k]); r.chord[k] = this.chord(r.eta[k]);
+        r.ai[k] = this.aiAt(thetas[k], A); r.ae[k] = alpha - r.ai[k];
+        r.gamma[k] = this.gammaAt(thetas[k], A);
+      }
+      for (let k = 0; k < n; k++) {
+        const w = W[k]; let ab = 0;
+        for (let j = 0; j < n; j++) ab += w[j] * r.ae[j];
+        r.abar[k] = ab;
+        sec.att(r.ae[k], at); sec.stall(ab, st);
+        r.clAtt[k] = at.cl; r.cl[k] = at.cl + st.ds; r.f[k] = st.f;
+        r.cdv[k] = sec.kProfile * (r.cl[k] - sec.ClDmin) ** 2 + st.cdSep;
+      }
+      return r;
+    }
+    /** 迎角ごとの表（CL, CDi, 形状抗力の可変分, 吹き下ろし角 など）を作る */
+    buildTable(aMin, aMax, step) {
+      const K = this.K, n = Math.round((aMax - aMin) / step) + 1;
+      const T = {
+        aMin, step, n,
+        CL: new Float64Array(n), CDi: new Float64Array(n), CDpv: new Float64Array(n),
+        aiRoot: new Float64Array(n), e: new Float64Array(n), fMin: new Float64Array(n),
+        stallFrac: new Float64Array(n), CLint: new Float64Array(n), resid: new Float64Array(n),
+        A: new Float64Array(n * K),
+      };
+      this.table = T;
+      const i0 = Math.round(-aMin / step);
+      const store = (i, sol) => {
+        const A = sol.A, a = aMin + i * step;
+        T.A.set(A, i * K);
+        T.resid[i] = sol.residual;
+        T.CL[i] = Math.PI * this.AR * A[0];
+        let cdi = 0; for (let j = 0; j < K; j++) cdi += this.n[j] * A[j] * A[j];
+        T.CDi[i] = Math.PI * this.AR * cdi;
+        // スパン方向の積分（θ の中点則）
+        const S = this.stations(a, A, this.thInt, this.Wint), dth = (Math.PI / 2) / this.nInt, hb = this.b / 2;
+        let cdp = 0, clI = 0, fMin = 1, stall = 0;
+        for (let j = 0; j < this.nInt; j++) {
+          const dy = hb * Math.sin(this.thInt[j]) * dth;
+          cdp += S.chord[j] * S.cdv[j] * dy; clI += S.chord[j] * S.cl[j] * dy;
+          if (S.f[j] < fMin) fMin = S.f[j];
+          if (S.f[j] < 0.7) stall += dy;
+        }
+        T.CDpv[i] = (2 / this.S) * cdp; T.CLint[i] = (2 / this.S) * clI;
+        T.fMin[i] = fMin; T.stallFrac[i] = stall / hb;
+        T.aiRoot[i] = this.aiAt(Math.PI / 2, A);
+        T.e[i] = T.CDi[i] > 1e-10 ? (T.CL[i] * T.CL[i]) / (Math.PI * this.AR * T.CDi[i]) : NaN;
+      };
+      let A = null;
+      for (let i = i0; i < n; i++) { const s = this.solve(aMin + i * step, A); store(i, s); A = s.A; }
+      A = T.A.slice(i0 * K, i0 * K + K);
+      for (let i = i0 - 1; i >= 0; i--) { const s = this.solve(aMin + i * step, A); store(i, s); A = s.A; }
+    }
+    _idx(alpha) {
+      const T = this.table;
+      const u = clamp((alpha - T.aMin) / T.step, 0, T.n - 1.000001);
+      const i = u | 0;
+      return [i, u - i];
+    }
+    /** 迎角 α における翼全体の係数（表の補間） */
+    coeffs(alpha, out = {}) {
+      const T = this.table, [i, t] = this._idx(alpha);
+      const L = (arr) => arr[i] + t * (arr[i + 1] - arr[i]);
+      out.CL = L(T.CL); out.CDi = L(T.CDi); out.CDpv = L(T.CDpv);
+      out.aiRoot = L(T.aiRoot); out.fMin = L(T.fMin); out.stallFrac = L(T.stallFrac);
+      out.e = out.CDi > 1e-8 ? (out.CL * out.CL) / (Math.PI * this.AR * out.CDi) : NaN;
+      return out;
+    }
+    interpA(alpha, out = new Float64Array(this.K)) {
+      const T = this.table, K = this.K, [i, t] = this._idx(alpha);
+      for (let j = 0; j < K; j++) out[j] = T.A[i * K + j] + t * (T.A[(i + 1) * K + j] - T.A[i * K + j]);
+      return out;
+    }
+    /** 描画用：η = |2y/b| の各点（0→1 の昇順）での 翼弦・有効迎角・Cl・はく離点・循環 */
+    spanState(alpha, etas, A = this.interpA(alpha)) {
+      const cache = this._spanCache || (this._spanCache = new Map());
+      let c = cache.get(etas);
+      if (!c) {
+        const th = Float64Array.from(etas, (e) => Math.acos(clamp(e, 0, 1)));
+        c = { th, W: this.smoothMatrix(th) };
+        cache.set(etas, c);
+      }
+      return this.stations(alpha, A, c.th, c.W);
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * 6. 後流渦モデル（翼端渦・吹き下ろしの可視化用）
+   *    揚力線の循環分布 Γ(y) を M 本の後流渦糸に分け（強さ = 隣の区間との Γ の差）、
+   *    後縁から下流へ伸ばす。下流では翼端渦の中心 z_c へ巻き上がる。
+   *    誘導速度はビオ・サバールの法則（渦核半径 rc で特異性を除去）。V∞=1 で無次元。
+   * ------------------------------------------------------------------ */
+  function biotSavartSegment(px, py, pz, ax, ay, az, bx, by, bz, s, rc2, out) {
+    const r1x = px - ax, r1y = py - ay, r1z = pz - az, r2x = px - bx, r2y = py - by, r2z = pz - bz;
+    const cx = r1y * r2z - r1z * r2y, cy = r1z * r2x - r1x * r2z, cz = r1x * r2y - r1y * r2x;
+    const r0x = bx - ax, r0y = by - ay, r0z = bz - az;
+    const den = cx * cx + cy * cy + cz * cz + rc2 * (r0x * r0x + r0y * r0y + r0z * r0z);
+    const r1 = Math.sqrt(r1x * r1x + r1y * r1y + r1z * r1z), r2 = Math.sqrt(r2x * r2x + r2y * r2y + r2z * r2z);
+    if (den < 1e-24 || r1 < 1e-12 || r2 < 1e-12) return;
+    const dot = r0x * (r1x / r1 - r2x / r2) + r0y * (r1y / r1 - r2y / r2) + r0z * (r1z / r1 - r2z / r2);
+    const k = (s / (4 * Math.PI)) * dot / den;
+    out[0] += k * cx; out[1] += k * cy; out[2] += k * cz;
+  }
+
+  class WakeModel {
+    constructor() { this.fil = []; this.rc = 0.3; this.zc = 0; this.gammaRoot = 0; }
+    /** wing: LiftingLine, alpha: 翼の迎角。opts.straight=true で巻き上がりなし・1/4翼弦から直進（検証用） */
+    build(wing, alpha, opts = {}) {
+      const M = opts.M || 10, hb = wing.b / 2, A = wing.interpA(alpha);
+      const ye = [], G = [0];
+      for (let k = 0; k <= M; k++) ye.push(hb * Math.sin((0.5 * Math.PI * k) / M));
+      for (let k = 1; k <= M; k++) G.push(wing.gammaAt(Math.acos(clamp(0.5 * (ye[k - 1] + ye[k]) / hb, 0, 1)), A));
+      G.push(0);
+      const dG = [0];
+      let sum = 0, mom = 0;
+      for (let k = 1; k <= M; k++) { dG.push(G[k] - G[k + 1]); sum += dG[k]; mom += dG[k] * ye[k]; }
+      this.gammaRoot = G[1];
+      this.zc = Math.abs(sum) > 1e-9 ? clamp(mom / sum, 0.3 * hb, hb) : (Math.PI / 4) * hb;
+      const ai = wing.aiAt(Math.PI / 2, A);
+      const eps = opts.straight ? 0 : 1.5 * ai;               // 後流は吹き下ろしの分だけ下がる
+      const da = opts.straight ? 0 : alpha - eps;
+      const dx = Math.cos(da), dy = Math.sin(da);
+      const Lr = 1.4 * wing.b, far = 60 * wing.b;
+      this.fil = [];
+      for (let k = 1; k <= M; k++) {
+        const z0 = ye[k], c = wing.chord(z0 / hb);
+        const x0 = opts.straight ? 0 : 0.75 * Math.max(c, 0.02 * wing.cRoot);
+        const P0 = [x0, 0, z0];
+        let pts;
+        if (opts.straight) pts = [P0, [x0 + far, 0, z0]];
+        else {
+          const z1 = z0 + (this.zc - z0) * 0.45, z2 = this.zc + (z0 - this.zc) * 0.06;
+          pts = [P0, [x0 + dx * 0.35 * Lr, dy * 0.35 * Lr, z1], [x0 + dx * Lr, dy * Lr, z2], [x0 + dx * (Lr + far), dy * (Lr + far), z2]];
+        }
+        this.fil.push({ pts, s: -dG[k] });   // +z 側の渦糸（下流向き）は負の強さで内側に吹き下ろし
+      }
+      this.rc = opts.rc !== undefined ? opts.rc : 0.035 * wing.b;
+      return this;
+    }
+    /** 点 p（機体座標, m）の誘導速度（V∞=1 単位）。左右対称に鏡像を加える */
+    induced(px, py, pz, out = [0, 0, 0]) {
+      out[0] = out[1] = out[2] = 0;
+      const rc2 = this.rc * this.rc;
+      for (const f of this.fil) {
+        const P = f.pts;
+        for (let i = 0; i + 1 < P.length; i++) {
+          const a = P[i], b = P[i + 1];
+          biotSavartSegment(px, py, pz, a[0], a[1], a[2], b[0], b[1], b[2], f.s, rc2, out);
+          biotSavartSegment(px, py, pz, a[0], a[1], -a[2], b[0], b[1], -b[2], -f.s, rc2, out);
+        }
+      }
+      return out;
+    }
+    /** 流線追跡（翼端渦のらせん表示用）。u = 一様流 + 誘導速度 */
+    trace(p0, alpha, ds, nSteps) {
+      const pts = [p0.slice()], v = [0, 0, 0], fx = Math.cos(alpha), fy = Math.sin(alpha);
+      let p = p0.slice();
+      const f = (q) => { this.induced(q[0], q[1], q[2], v); const u = [fx + v[0], fy + v[1], v[2]]; const m = Math.hypot(u[0], u[1], u[2]) || 1; return [u[0] / m, u[1] / m, u[2] / m]; };
+      for (let i = 0; i < nSteps; i++) {
+        const k1 = f(p), k2 = f([p[0] + 0.5 * ds * k1[0], p[1] + 0.5 * ds * k1[1], p[2] + 0.5 * ds * k1[2]]);
+        p = [p[0] + ds * k2[0], p[1] + ds * k2[1], p[2] + ds * k2[2]];
+        pts.push(p);
+      }
+      return pts;
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * 7. 機体モデル（セスナ172 程度の小型機）
+   * ------------------------------------------------------------------ */
+  class AircraftModel {
+    constructor() {
+      this.mass = 1000;          // 質量 [kg]
+      this.S = 16.2;             // 主翼面積 [m²]（アスペクト比を変えても一定）
+      this.Iyy = 1350;           // ピッチ慣性モーメント [kg·m²]
+      this.CD0body = 0.018;      // 胴体・尾翼・脚などの有害抗力係数
+      this.CmAlpha = -0.9;       // 静安定（尾翼の復元モーメント）[1/rad]
+      this.Cmq = -12;            // ピッチ減衰
+      this.muRoll = 0.02;        // 地上の転がり摩擦係数
+      this.Vc = 25;              // プロペラ特性速度 [m/s]（これより速いと出力 P ≈ T0·Vc 一定）
+      this.nPanels = 150;
+      this.version = 0;
+    }
+    get W() { return this.mass * G0; }
+    configure({ naca, AR, planform }) {
+      this.foil = new NacaAirfoil(naca, this.nPanels);
+      this.panel = new VortexPanelSolver(this.foil);
+      this.section = new SectionModel(this.panel);
+      this.wing = new LiftingLine(this.section, { AR, S: this.S, planform });
+      this.config = { naca: this.foil.code, AR, planform };
+      this.version++;
+      return this;
+    }
+    /** プロペラ推力：静止推力 T0、高速では一定出力（T ≈ P/V）。
+     *  速度が上がると推力が減るので、上昇中の長周期運動（フゴイド）が減衰する。 */
+    thrustAt(T0, V) { return T0 / Math.sqrt(1 + (V / this.Vc) ** 2); }
+    reynolds(V, rho, mu) { return (rho * Math.max(V, 0.1) * this.wing.mac) / mu; }
+    /** 全機の空力：CL, CD（= 形状抗力 + 誘導抗力 + 有害抗力）と力 */
+    aero(alpha, V, rho, mu, out = {}) {
+      const w = this.wing.coeffs(alpha, out);
+      const Re = this.reynolds(V, rho, mu);
+      const CDpMin = this.section.cdMin(Re);
+      out.Re = Re;
+      out.CDp = CDpMin + w.CDpv;
+      out.CD0 = this.CD0body;
+      out.CD = out.CDp + w.CDi + this.CD0body;
+      out.q = 0.5 * rho * V * V;
+      out.L = out.q * this.S * out.CL;
+      out.D = out.q * this.S * out.CD;
+      return out;
+    }
+    /** 与えた Re で L/D が最大となる迎角 */
+    bestLD(Re) {
+      const T = this.wing.table, cdm = this.section.cdMin(Re);
+      let best = { alpha: 0, LD: 0 };
+      for (let i = 0; i < T.n; i++) {
+        const CD = cdm + T.CDpv[i] + T.CDi[i] + this.CD0body, LD = T.CL[i] / CD;
+        if (LD > best.LD) best = { alpha: T.aMin + i * T.step, LD, CL: T.CL[i], CD };
+      }
+      return best;
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * 8. 飛行シミュレーション（縦 3 自由度, RK4, 固定刻み）
+   *    状態 s = [x, z, vx, vz, θ, q]
+   *      x: 水平距離, z: 対地高度, (vx, vz): 対地速度 = 対気速度（無風）
+   *      θ: ピッチ角（機首上げ正）, q: ピッチ角速度
+   *    経路角 γ = atan2(vz, vx), 迎角 α = θ − γ
+   *    並進： m·dv/dt = L + D + W + T（4 つの力のベクトル和）
+   *    回転： Iyy·dq/dt = M = q̄Sc̄[Cmα(α − α_cmd) + Cmq·q c̄/(2V)]
+   *           α_cmd はエレベーターで決まる「トリム迎角」（迎角スライダー）。
+   *    地上では垂直抗力 N と転がり摩擦が加わる（滑走中のみ）。
+   * ------------------------------------------------------------------ */
+  class FlightSim {
+    constructor(aircraft) {
+      this.ac = aircraft;
+      this.s = new Float64Array(6);
+      this.mode = 'tunnel';               // 'tunnel' | 'powered' | 'glide'
+      this.alphaCmd = 5 * DEG;
+      this.thrust = 0;
+      this.hRef = 0;                      // 地面の標高 [m]（空気密度の基準）
+      this.thetaGroundMax = 12 * DEG;     // 尻もち角
+      this.t = 0;
+      this.tunnel = { alpha: 5 * DEG, V: 40 };
+      this.events = [];
+      this._k = [0, 1, 2, 3].map(() => new Float64Array(6));
+      this._tmp = new Float64Array(6);
+      this._ev = { aero: {} };
+      this.wasGround = false;
+    }
+    /** 状態 s における全ての力を評価（描画・表示にもこの結果を使う） */
+    evaluate(s, out = this._ev) {
+      const ac = this.ac, x = s[0], z = s[1], vx = s[2], vz = s[3], th = s[4], q = s[5];
+      const V = Math.hypot(vx, vz);
+      const gamma = V > 1e-6 ? Math.atan2(vz, vx) : 0;
+      const alpha = th - gamma;
+      const atm = Atmosphere.at(this.hRef + z);
+      const a = ac.aero(alpha, V, atm.rho, atm.mu, out.aero);
+      const T = this.mode === 'glide' ? 0 : ac.thrustAt(this.thrust, V);
+      const W = ac.W, sg = Math.sin(gamma), cg = Math.cos(gamma);
+      let Fx = -a.L * sg - a.D * cg + T * Math.cos(th);
+      let Fz = a.L * cg - a.D * sg + T * Math.sin(th) - W;
+      const mac = ac.wing.mac, Veff = Math.max(V, 5);
+      let M = a.q * ac.S * mac * (ac.CmAlpha * (alpha - this.alphaCmd) + (ac.Cmq * q * mac) / (2 * Veff));
+      let N = 0, Ff = 0;
+      const ground = this.mode !== 'tunnel' && z <= 1e-4 && vz <= 1e-4;
+      if (ground) {
+        if (Fz < 0) { N = -Fz; Fz = 0; }
+        const fmax = ac.muRoll * N;
+        if (vx > 0.05) Ff = -fmax; else if (vx < -0.05) Ff = fmax; else Ff = -clamp(Fx, -fmax, fmax);
+        Fx += Ff;
+        if ((th <= 0 && M < 0) || (th >= this.thetaGroundMax && M > 0)) M = 0;
+      }
+      Object.assign(out, { x, z, V, gamma, alpha, theta: th, q, atm, T, W, L: a.L, D: a.D, Fx, Fz, M, N, Ff, onGround: ground, ax: Fx / ac.mass, az: Fz / ac.mass });
+      return out;
+    }
+    deriv(s, ds) {
+      const e = this.evaluate(s, this._evd || (this._evd = { aero: {} }));
+      ds[0] = s[2]; ds[1] = s[3]; ds[2] = e.ax; ds[3] = e.az; ds[4] = s[5]; ds[5] = e.M / this.ac.Iyy;
+    }
+    /** 4 次のルンゲ・クッタ法で dt だけ進める */
+    step(dt) {
+      if (this.mode === 'tunnel') { this.t += dt; return; }
+      const s = this.s, [k1, k2, k3, k4] = this._k, tmp = this._tmp;
+      this.deriv(s, k1);
+      for (let i = 0; i < 6; i++) tmp[i] = s[i] + 0.5 * dt * k1[i];
+      this.deriv(tmp, k2);
+      for (let i = 0; i < 6; i++) tmp[i] = s[i] + 0.5 * dt * k2[i];
+      this.deriv(tmp, k3);
+      for (let i = 0; i < 6; i++) tmp[i] = s[i] + dt * k3[i];
+      this.deriv(tmp, k4);
+      for (let i = 0; i < 6; i++) s[i] += (dt / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]);
+      // 地面拘束（めり込まない・機首は地面より下がらない・尻もち角で止まる）
+      if (s[1] < 0) { s[1] = 0; if (s[3] < 0) s[3] = 0; if (this.mode === 'glide') this.events.push('touchdown'); }
+      if (s[1] <= 1e-4) {
+        if (s[4] < 0) { s[4] = 0; if (s[5] < 0) s[5] = 0; }
+        if (s[4] > this.thetaGroundMax) { s[4] = this.thetaGroundMax; if (s[5] > 0) s[5] = 0; }
+      }
+      const onG = s[1] <= 0.05;
+      if (this.wasGround && !onG && s[1] > 0.3) { this.events.push('liftoff'); this.wasGround = false; }
+      if (onG && s[1] <= 1e-4) this.wasGround = true;
+      this.t += dt;
+    }
+    resetPowered() { this.mode = 'powered'; this.s.fill(0); this.t = 0; this.wasGround = true; }
+    /** 迎角 alpha でつり合い滑空する状態（L = W cosγ, D = W sinγ） */
+    trimGlide(alpha, z0) {
+      const ac = this.ac, atm = Atmosphere.at(this.hRef + z0);
+      let V = 40, gamma = 0, ok = true;
+      for (let it = 0; it < 8; it++) {
+        const a = ac.aero(alpha, V, atm.rho, atm.mu, {});
+        if (a.CL < 0.03) { ok = false; break; }
+        gamma = -Math.atan(a.CD / a.CL);
+        V = Math.sqrt((2 * ac.W * Math.cos(gamma)) / (atm.rho * ac.S * a.CL));
+      }
+      return { V, gamma, ok };
+    }
+    resetGlide(z0 = 800) {
+      this.mode = 'glide'; this.t = 0; this.wasGround = false;
+      const tr = this.trimGlide(this.alphaCmd, z0);
+      const V = tr.ok ? tr.V : 45, g = tr.ok ? tr.gamma : -0.1;
+      this.s.set([0, z0, V * Math.cos(g), V * Math.sin(g), this.alphaCmd + g, 0]);
+      return tr;
+    }
+    setTunnel(alpha, V) {
+      this.mode = 'tunnel';
+      this.tunnel.alpha = alpha; this.tunnel.V = V;
+      this.s.set([0, 0, V, 0, alpha, 0]);
+    }
+    /** 飛行中に対気速度を与える（方向は保ったまま） */
+    setAirspeed(Vn) {
+      const s = this.s, V = Math.hypot(s[2], s[3]);
+      if (V > 0.1) { s[2] *= Vn / V; s[3] *= Vn / V; }
+      else { s[2] = Vn * Math.cos(s[4]); s[3] = s[1] > 0.05 ? Vn * Math.sin(s[4]) : 0; }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * 9. セルフテスト（数値計算の正しさを理論値と比べる）
+   * ------------------------------------------------------------------ */
+  const SelfTest = {
+    run() {
+      const out = [];
+      const add = (name, ok, detail) => out.push({ name, ok: !!ok, detail });
+      const TWO_PI = 2 * Math.PI;
+
+      // (1) 対称翼 NACA 0012：Cl(0)=0, 揚力傾斜 ≈ 2π（厚さの補正 2π(1+0.77t/c)）
+      const p12 = new VortexPanelSolver(new NacaAirfoil('0012', 150));
+      const slope12 = (p12.clInviscid(1 * DEG) - p12.clInviscid(-1 * DEG)) / (2 * DEG);
+      add('NACA0012: α=0 で Cl=0', Math.abs(p12.Cl0) < 1e-6, `Cl(0) = ${p12.Cl0.toExponential(2)}`);
+      add('NACA0012: 揚力傾斜 dCl/dα ≈ 2π', slope12 / TWO_PI > 0.95 && slope12 / TWO_PI < 1.15,
+        `${slope12.toFixed(3)} /rad = ${(slope12 / TWO_PI).toFixed(3)} × 2π`);
+      const th12 = TWO_PI * (1 + 0.77 * 0.12);
+      add('NACA0012: 厚翼補正 2π(1+0.77t) と一致', Math.abs(slope12 / th12 - 1) < 0.03,
+        `理論 ${th12.toFixed(3)} /rad, 誤差 ${((slope12 / th12 - 1) * 100).toFixed(2)}%`);
+
+      // (2) 薄い翼 NACA 0002 → 薄翼理論 2π に収束
+      const p02 = new VortexPanelSolver(new NacaAirfoil('0002', 150));
+      const slope02 = (p02.clInviscid(1 * DEG) - p02.clInviscid(-1 * DEG)) / (2 * DEG);
+      add('NACA0002（薄翼）: dCl/dα → 2π', Math.abs(slope02 / TWO_PI - 1) < 0.03,
+        `${slope02.toFixed(3)} /rad = ${(slope02 / TWO_PI).toFixed(3)} × 2π`);
+
+      // (3) キャンバー翼 NACA 2412：零揚力角・モーメントを薄翼理論と比較
+      const f24 = new NacaAirfoil('2412', 150), p24 = new VortexPanelSolver(f24);
+      let aL0 = 0, A1 = 0, A2 = 0; const nq = 4000;
+      for (let i = 0; i < nq; i++) {
+        const th = ((i + 0.5) * Math.PI) / nq, x = 0.5 * (1 - Math.cos(th)), dz = f24.camber(x).dyc, d = Math.PI / nq;
+        aL0 += dz * (Math.cos(th) - 1) * d; A1 += dz * Math.cos(th) * d; A2 += dz * Math.cos(2 * th) * d;
+      }
+      aL0 *= -1 / Math.PI; A1 *= 2 / Math.PI; A2 *= 2 / Math.PI;
+      const cmThin = (Math.PI / 4) * (A2 - A1);
+      const aL0p = -Math.atan2(p24.Cl0, p24.Cl90);
+      add('NACA2412: 零揚力角 α_L0（薄翼理論）', Math.abs(aL0p - aL0) < 0.3 * DEG,
+        `パネル法 ${(aL0p / DEG).toFixed(2)}°, 薄翼理論 ${(aL0 / DEG).toFixed(2)}°`);
+      const pf = p24.pressureForces(4 * DEG);
+      add('NACA2412: Cm(1/4翼弦) ≈ 薄翼理論', Math.abs(pf.cm - cmThin) < 0.012,
+        `パネル法 ${pf.cm.toFixed(4)}, 薄翼理論 ${cmThin.toFixed(4)}`);
+
+      // (4) クッタ条件と、循環による Cl と圧力積分による Cl の一致
+      const g = p24.gamma(5 * DEG);
+      add('クッタ条件 γ(後縁下) + γ(後縁上) = 0', Math.abs(g[0] + g[p24.N]) < 1e-9, `残差 ${Math.abs(g[0] + g[p24.N]).toExponential(2)}`);
+      const pf5 = p24.pressureForces(5 * DEG), clc = p24.clInviscid(5 * DEG);
+      add('Cl(循環) = Cl(圧力積分)', Math.abs(pf5.cl / clc - 1) < 0.02, `${clc.toFixed(4)} vs ${pf5.cl.toFixed(4)}`);
+      add('ポテンシャル流の抗力 ≈ 0（ダランベール）', Math.abs(pf5.cd) < 0.005, `Cd_p = ${pf5.cd.toExponential(2)}`);
+
+      // (5) 揚力線理論：楕円翼 + 線形断面 → e = 1, CLα = a0/(1 + a0/(πAR))
+      const lin = {   // 失速のない理想的な線形断面 Cl = 2πα
+        kProfile: 0, ClDmin: 0,
+        att(a, o) { o.cl = TWO_PI * a; o.dcl = TWO_PI; return o; },
+        stall(a, o) { o.ds = 0; o.dds = 0; o.f = 1; o.cdSep = 0; return o; },
+      };
+      const ARt = 8, ell = new LiftingLine(lin, { AR: ARt, S: 16, planform: 'ellipse', aMin: -4, aMax: 8, aStep: 1 });
+      const ce = ell.coeffs(5 * DEG), clTh = (TWO_PI / (1 + TWO_PI / (Math.PI * ARt))) * 5 * DEG;
+      add('揚力線：楕円翼のスパン効率 e = 1', Math.abs(ce.e - 1) < 0.01, `e = ${ce.e.toFixed(4)}`);
+      add('揚力線：楕円翼 CL = a0α/(1+a0/πAR)', Math.abs(ce.CL / clTh - 1) < 0.01, `${ce.CL.toFixed(4)} vs 理論 ${clTh.toFixed(4)}`);
+      const rect = new LiftingLine(lin, { AR: 6, S: 16, planform: 'rect', aMin: -4, aMax: 8, aStep: 1 });
+      const cr = rect.coeffs(5 * DEG);
+      add('揚力線：矩形翼 AR=6 で e < 1', cr.e > 0.85 && cr.e < 0.995, `e = ${cr.e.toFixed(4)}`);
+
+      // (6) 後流渦（ビオ・サバール）の吹き下ろし = 揚力線の α_i
+      const wk = new WakeModel().build(ell, 5 * DEG, { straight: true, M: 60, rc: 1e-4 });
+      const w0 = wk.induced(0, 0, 0)[1], aiR = ell.aiAt(Math.PI / 2, ell.interpA(5 * DEG));
+      add('後流渦の吹き下ろし w/V = −α_i（翼中央）', w0 < 0 && Math.abs(-w0 / aiR - 1) < 0.05,
+        `ビオ・サバール ${(-w0).toFixed(4)}, 揚力線 ${aiR.toFixed(4)}`);
+
+      // (7) 飛行力学：定常滑空で「水平距離 / 高度損失 = L/D」
+      const ac = new AircraftModel().configure({ naca: '2412', AR: 7.5, planform: 'rect' });
+      const sim = new FlightSim(ac);
+      sim.alphaCmd = 5 * DEG; sim.resetGlide(1500);
+      for (let i = 0; i < 120 * 30; i++) sim.step(1 / 120);
+      const x0 = sim.s[0], z0 = sim.s[1];
+      for (let i = 0; i < 120 * 30; i++) sim.step(1 / 120);
+      const ratio = (sim.s[0] - x0) / (z0 - sim.s[1]);
+      const ev = sim.evaluate(sim.s, { aero: {} });
+      const LD = ev.L / ev.D;
+      add('滑空：水平距離/高度損失 = L/D', Math.abs(ratio / LD - 1) < 0.03, `距離比 ${ratio.toFixed(2)}, L/D ${LD.toFixed(2)}`);
+      add('滑空：W·sinγ ≈ D（速度が保たれる）', Math.abs((-ev.W * Math.sin(ev.gamma)) / ev.D - 1) < 0.03,
+        `W sinγ = ${(-ev.W * Math.sin(ev.gamma)).toFixed(0)} N, D = ${ev.D.toFixed(0)} N`);
+      return out;
+    },
+  };
+
+  global.AeroLab = {
+    DEG, G0, clamp, smoothstep, Atmosphere, NacaAirfoil, VortexPanelSolver, linearVortexInfluence,
+    SectionModel, LiftingLine, WakeModel, biotSavartSegment, AircraftModel, FlightSim, SelfTest,
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+<script type="module">
+/* =====================================================================
+ *  描画・UI モジュール
+ *  物理エンジン AeroLab の計算結果を「読むだけ」で表示する。
+ *  （例外：粒子を動かすための流れ場の評価は GPU で行うが、その元データ
+ *   ＝パネルの渦強さ・揚力線の循環分布はすべて AeroLab が計算したもの）
+ * ===================================================================== */
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import GUI from 'lil-gui';
+import { Chart, registerables } from 'chart.js';
+
+Chart.register(...registerables);
+const AL = window.AeroLab;
+const { DEG, clamp, NacaAirfoil, AircraftModel, FlightSim, WakeModel, SelfTest } = AL;
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : '–');
+const fmtN = (N) => (!Number.isFinite(N) ? '–' : Math.abs(N) >= 1000 ? `${(N / 1000).toFixed(2)}<small>kN</small>` : `${N.toFixed(0)}<small>N</small>`);
+const fmtKN = (N) => (Math.abs(N) >= 1000 ? `${(N / 1000).toFixed(2)} kN` : `${N.toFixed(0)} N`);
+const fatal = (msg) => { const el = $('fatal'); el.style.display = 'flex'; el.innerHTML = `<div>${msg}</div>`; };
+
+/* ---------------------------------------------------------------------
+ * 1. パラメータ（GUI と結びつく値）
+ * ------------------------------------------------------------------- */
+const P = {
+  mode: 'tunnel',        // 'tunnel' | 'powered' | 'glide'
+  alpha: 5,              // 迎角 [°]（飛行モードではエレベーターのトリム迎角）
+  V: 40,                 // 対気速度 [m/s]
+  thrust: 3000,          // 静止推力 T0 [N]
+  altitude: 0,           // 高度（地面の標高）[m] → 空気密度
+  naca: '2412', nacaPreset: '2412', AR: 7.5, planform: 'rect',
+  view: '3d', secAlphaMode: 'geo', colorMode: 'cp',
+  paused: false, timeScale: 1, quality: 'auto',
+};
+const LAYERS = {
+  cp: true, particles: true, vortex: true, downwash: true, gamma: false,
+  forces: true, smoke: true, pArrows: true, env: true, charts: true,
+};
+const INFO = { rho: '', wing: '' };
+const GLIDE_Z0 = 700;          // 滑空開始の対地高度 [m]
+const U3D_PER_B = 0.55;        // 3D 流れ表示の速さ [翼幅/秒]（実速度よりゆっくり）
+const U2D = 0.55;              // 2D 流れ表示の速さ [翼弦/秒]
+const GEAR_H = 1.95;           // 重心から車輪下端までの高さ [m]
+const isMobile = matchMedia('(pointer: coarse)').matches || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+
+/* ---------------------------------------------------------------------
+ * 2. 物理エンジンの準備
+ * ------------------------------------------------------------------- */
+const aircraft = new AircraftModel().configure({ naca: P.naca, AR: P.AR, planform: P.planform });
+const sim = new FlightSim(aircraft);
+sim.thrust = P.thrust; sim.alphaCmd = P.alpha * DEG; sim.hRef = P.altitude;
+sim.setTunnel(P.alpha * DEG, P.V);
+const wake = new WakeModel();
+const PHYS_DT = 1 / 120;       // 物理の固定刻み（120 Hz）
+let physAcc = 0;
+let S = sim.evaluate(sim.s, { aero: {} });   // 現在の状態。描画はこれを読むだけ
+
+/* ---------------------------------------------------------------------
+ * 3. カラーマップ（Cp：負圧＝青, 0＝白, 正圧＝赤）
+ * ------------------------------------------------------------------- */
+const CP_NEG = [[0, [0.93, 0.95, 0.98]], [0.35, [0.42, 0.70, 1.0]], [1, [0.16, 0.30, 0.95]]];
+const CP_POS = [[0, [0.93, 0.95, 0.98]], [0.5, [1.0, 0.62, 0.33]], [1, [0.88, 0.14, 0.16]]];
+function ramp(stops, t, out) {
+  for (let i = 1; i < stops.length; i++) {
+    if (t <= stops[i][0] || i === stops.length - 1) {
+      const [t0, c0] = stops[i - 1], [t1, c1] = stops[i], u = clamp((t - t0) / (t1 - t0), 0, 1);
+      for (let k = 0; k < 3; k++) out[k] = c0[k] + (c1[k] - c0[k]) * u;
+      return out;
+    }
+  }
+  return out;
+}
+function cpColor(cp, out = [0, 0, 0]) { return cp < 0 ? ramp(CP_NEG, Math.min(-cp / 3, 1), out) : ramp(CP_POS, Math.min(cp, 1), out); }
+const toLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+// 頂点色用の早見表（線形色空間）
+const LUT_N = 1024, LUT_MIN = -4, LUT_MAX = 1.05, cpLUT = new Float32Array(LUT_N * 3);
+for (let i = 0, c = [0, 0, 0]; i < LUT_N; i++) {
+  cpColor(LUT_MIN + ((LUT_MAX - LUT_MIN) * i) / (LUT_N - 1), c);
+  cpLUT[i * 3] = toLinear(c[0]); cpLUT[i * 3 + 1] = toLinear(c[1]); cpLUT[i * 3 + 2] = toLinear(c[2]);
+}
+const cpLutIndex = (cp) => 3 * Math.round(clamp((cp - LUT_MIN) / (LUT_MAX - LUT_MIN), 0, 1) * (LUT_N - 1));
+const GLSL_COLOR = /* glsl */ `
+vec3 cpColor(float cp) {
+  vec3 w = vec3(0.93, 0.95, 0.98);
+  if (cp < 0.0) {
+    float t = clamp(-cp / 3.0, 0.0, 1.0);
+    return t < 0.35 ? mix(w, vec3(0.42, 0.70, 1.0), t / 0.35) : mix(vec3(0.42, 0.70, 1.0), vec3(0.16, 0.30, 0.95), (t - 0.35) / 0.65);
+  }
+  float t = clamp(cp, 0.0, 1.0);
+  return t < 0.5 ? mix(w, vec3(1.0, 0.62, 0.33), t / 0.5) : mix(vec3(1.0, 0.62, 0.33), vec3(0.88, 0.14, 0.16), (t - 0.5) / 0.5);
+}
+vec3 speedColor(float s) {
+  float t = clamp((s - 0.3) / 1.4, 0.0, 1.0);
+  return t < 0.5 ? mix(vec3(0.36, 0.16, 0.62), vec3(0.13, 0.66, 0.66), t / 0.5) : mix(vec3(0.13, 0.66, 0.66), vec3(1.0, 0.92, 0.25), (t - 0.5) / 0.5);
+}`;
+
+// 凡例（HTML）
+(function buildLegend() {
+  const stops = [];
+  for (let i = 0; i <= 40; i++) {
+    const cp = -3 + (4 * i) / 40, c = cpColor(cp);
+    stops.push(`rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0}) ${(i / 40) * 100}%`);
+  }
+  $('lgBar').style.background = `linear-gradient(to bottom, ${stops.join(',')})`;
+  $('lgTicks').innerHTML = [-3, -2, -1, 0, 0.5, 1].map((cp) => {
+    const v = Math.sqrt(Math.max(0, 1 - cp));
+    return `<div class="${cp === 0.5 ? 'minor' : ''}" style="top:${((cp + 3) / 4) * 100}%">${cp > 0 ? '+' : ''}${cp} <span>V/V∞ ${v.toFixed(2)}</span></div>`;
+  }).join('');
+})();
+
+/* ---------------------------------------------------------------------
+ * 4. レンダラ・シーン・カメラ
+ * ------------------------------------------------------------------- */
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+} catch (e) {
+  fatal('WebGL2 を初期化できませんでした。<br>WebGL2 に対応したブラウザ（最新の Chrome / Edge / Safari / Firefox）で開いてください。');
+  throw e;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
+renderer.setSize(innerWidth, innerHeight);
+$('app').appendChild(renderer.domElement);
+const FLOAT_RT = renderer.extensions.has('EXT_color_buffer_float');
+const HALF_RT = FLOAT_RT || renderer.extensions.has('EXT_color_buffer_half_float');
+if (!HALF_RT) console.warn('浮動小数点レンダーターゲットが使えないため、GPU 粒子を無効にします');
+
+// --- 3D 全機ビュー ---
+const scene3D = new THREE.Scene();
+scene3D.fog = new THREE.Fog(0x2a4260, 1800, 15000);
+const cam3D = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 60000);
+cam3D.position.set(-13, 6, 15);
+const ctl3D = new OrbitControls(cam3D, renderer.domElement);
+ctl3D.enableDamping = true; ctl3D.dampingFactor = 0.08;
+ctl3D.target.set(0.5, -0.3, 0); ctl3D.minDistance = 3; ctl3D.maxDistance = 400;
+
+// --- 翼断面 2D ビュー（翼弦 = 1 の無次元座標, 正射影） ---
+const sceneSec = new THREE.Scene();
+sceneSec.background = new THREE.Color(0x0b1524);
+const camSec = new THREE.OrthographicCamera(-2, 2, 1.2, -1.2, -10, 10);
+camSec.position.set(0.6, 0.05, 5);
+const ctlSec = new OrbitControls(camSec, renderer.domElement);
+ctlSec.enableRotate = false; ctlSec.screenSpacePanning = true; ctlSec.enableDamping = true;
+ctlSec.target.set(0.6, 0.05, 0); ctlSec.minZoom = 0.4; ctlSec.maxZoom = 12;
+ctlSec.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+ctlSec.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
+ctlSec.enabled = false;
+function fitSecCamera() {
+  const a = innerWidth / innerHeight, H = Math.max(1.7, 2.9 / a);
+  camSec.left = (-H * a) / 2; camSec.right = (H * a) / 2; camSec.top = H / 2; camSec.bottom = -H / 2;
+  camSec.updateProjectionMatrix();
+}
+fitSecCamera();
+
+// --- 光源 ---
+scene3D.add(new THREE.HemisphereLight(0xdbe8ff, 0x3a4636, 2.1));
+const sun = new THREE.DirectionalLight(0xffffff, 2.3);
+sun.position.set(-6, 12, 8);
+scene3D.add(sun);
+
+/* ---------------------------------------------------------------------
+ * 5. 環境：空・地面・滑走路・雲（機体中心の座標で描く＝浮動原点）
+ * ------------------------------------------------------------------- */
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(30000, 32, 16),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false,
+    vertexShader: /* glsl */ `varying vec3 vD; void main(){ vD = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: /* glsl */ `varying vec3 vD;
+      void main(){
+        float h = normalize(vD).y;
+        vec3 top = vec3(0.035, 0.07, 0.15), hor = vec3(0.17, 0.27, 0.39), bot = vec3(0.06, 0.09, 0.09);
+        vec3 c = h > 0.0 ? mix(hor, top, pow(h, 0.55)) : mix(hor, bot, pow(-h, 0.35));
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  }),
+);
+sky.renderOrder = -10;
+scene3D.add(sky);
+
+const envGroup = new THREE.Group();
+scene3D.add(envGroup);
+const groundMat = new THREE.ShaderMaterial({
+  uniforms: { uXac: { value: 0 }, uFogCol: { value: new THREE.Color(0x2a4260) } },
+  vertexShader: /* glsl */ `varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+  fragmentShader: /* glsl */ `
+    uniform float uXac; uniform vec3 uFogCol; varying vec3 vW;
+    float gridLine(vec2 g, float s) { vec2 q = g / s; vec2 d = abs(fract(q - 0.5) - 0.5) / fwidth(q); return 1.0 - min(min(d.x, d.y), 1.0); }
+    void main() {
+      vec2 g = vec2(uXac - vW.x, vW.z);
+      float n = sin(g.x * 0.0031416) * sin(g.y * 0.0047) + 0.6 * sin(g.x * 0.0094248 + 1.7);
+      vec3 base = vec3(0.075, 0.115, 0.095) * (0.85 + 0.18 * n);
+      float l = max(gridLine(g, 100.0) * 0.5, gridLine(g, 20.0) * 0.16);
+      vec3 col = mix(base, vec3(0.36, 0.52, 0.56), l);
+      float d = length(vW - cameraPosition);
+      gl_FragColor = vec4(mix(uFogCol, col, exp(-d / 6500.0)), 1.0);
+    }`,
+});
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000).rotateX(-Math.PI / 2), groundMat);
+envGroup.add(ground);
+
+function runwayTexture() {
+  const c = document.createElement('canvas'); c.width = 2048; c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = '#2a2e35'; g.fillRect(0, 0, 2048, 64);
+  g.fillStyle = '#e8e8e8';
+  g.fillRect(0, 2, 2048, 2); g.fillRect(0, 60, 2048, 2);                      // 側線
+  for (let x = 40; x < 2008; x += 41) g.fillRect(x, 30, 22, 4);                 // 中心線
+  for (const x0 of [6, 2016]) for (let y = 8; y < 58; y += 7) g.fillRect(x0, y, 24, 4);   // 末端標識
+  return new THREE.CanvasTexture(c);
+}
+const runway = new THREE.Mesh(
+  new THREE.PlaneGeometry(1500, 30).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ map: runwayTexture(), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
+);
+envGroup.add(runway);
+
+const cloudTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 4, 64, 64, 62);
+  gr.addColorStop(0, 'rgba(255,255,255,0.9)'); gr.addColorStop(0.5, 'rgba(235,242,255,0.45)'); gr.addColorStop(1, 'rgba(235,242,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+})();
+const clouds = [];
+for (let i = 0; i < 46; i++) {
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex, transparent: true, opacity: 0.28 + Math.random() * 0.2, depthWrite: false }));
+  const s = 220 + Math.random() * 480;
+  sp.scale.set(s * 1.8, s, 1);
+  clouds.push({ sp, x: Math.random() * 8000, h: 250 + Math.random() * 1500, z: (Math.random() - 0.5) * 7000 });
+  envGroup.add(sp);
+}
+
+/* ---------------------------------------------------------------------
+ * 6. 機体（主翼は NACA 断面をスパン方向にロフトし、頂点色 = Cp）
+ *    機体座標：x = 機尾方向, y = 上, z = スパン。原点は翼根 1/4 翼弦（重心）。
+ *    機首は -x 方向。ピッチ角 θ（機首上げ）は rotation.z = -θ。
+ * ------------------------------------------------------------------- */
+const acGroup = new THREE.Group();
+scene3D.add(acGroup);
+const matBody = new THREE.MeshStandardMaterial({ color: 0xdfe5ee, roughness: 0.45, metalness: 0.15 });
+const matDark = new THREE.MeshStandardMaterial({ color: 0x23272f, roughness: 0.75 });
+const matWing = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.0, side: THREE.DoubleSide });
+const NSH = 24;                                     // 半翼のスパン方向分割
+const ETA_HALF = Float64Array.from({ length: NSH + 1 }, (_, i) => Math.sin((Math.PI / 2) * (i / NSH)));
+const ETA64 = Float64Array.from({ length: 64 }, (_, i) => i / 63);
+const WING = { mesh: null, colors: null, N1: 0, nSurf: 0, gray: false };
+
+/** 翼型 foil を nSt 個の断面でロフトした形状。map(s, X, Y) → [x, y, z] */
+function loft(foil, nSt, map) {
+  const N1 = foil.x.length, pos = [], idx = [];
+  for (let s = 0; s < nSt; s++) for (let j = 0; j < N1; j++) pos.push(...map(s, foil.x[j], foil.y[j]));
+  for (let s = 0; s < nSt - 1; s++) {
+    for (let j = 0; j < N1 - 1; j++) {
+      const a = s * N1 + j, b = (s + 1) * N1 + j, c = s * N1 + j + 1, d = (s + 1) * N1 + j + 1;
+      idx.push(a, b, c, b, d, c);
+    }
+  }
+  const nSurf = pos.length / 3;
+  for (const s of [0, nSt - 1]) {           // 両端のふた
+    const cen = pos.length / 3;
+    pos.push(...map(s, 0.35, foil.camber(0.35).yc));
+    const st = pos.length / 3;
+    for (let j = 0; j < N1; j++) pos.push(...map(s, foil.x[j], foil.y[j]));
+    for (let j = 0; j < N1 - 1; j++) (s === 0 ? idx.push(cen, st + j, st + j + 1) : idx.push(cen, st + j + 1, st + j));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return { geo, nSurf, N1 };
+}
+
+function buildWing() {
+  if (WING.mesh) { acGroup.remove(WING.mesh); WING.mesh.geometry.dispose(); }
+  const wing = aircraft.wing, hb = wing.b / 2, zs = [], cs = [];
+  for (let s = 0; s <= 2 * NSH; s++) {
+    const u = (s - NSH) / NSH, eta = Math.sin((Math.PI / 2) * Math.abs(u));
+    zs.push(Math.sign(u) * eta * hb);
+    cs.push(Math.max(wing.chord(eta), 0.035 * wing.cRoot));
+  }
+  const { geo, nSurf, N1 } = loft(aircraft.foil, zs.length, (s, X, Y) => [-cs[s] / 4 + cs[s] * X, cs[s] * Y, zs[s]]);
+  const col = new Float32Array(geo.attributes.position.count * 3).fill(0.55);
+  WING.colors = new THREE.BufferAttribute(col, 3);
+  geo.setAttribute('color', WING.colors);
+  WING.mesh = new THREE.Mesh(geo, matWing);
+  WING.N1 = N1; WING.nSurf = nSurf; WING.gray = false;
+  acGroup.add(WING.mesh);
+}
+
+// 胴体・尾翼・プロペラ・脚（形は固定）
+const bodyGroup = new THREE.Group();
+acGroup.add(bodyGroup);
+let propGroup, propDisc;
+(function buildBody() {
+  const prof = [[0, -2.55], [0.2, -2.5], [0.4, -2.28], [0.56, -1.8], [0.63, -1.0], [0.64, 0.4], [0.57, 1.6], [0.41, 3.0], [0.25, 4.4], [0.14, 5.5], [0.05, 5.9], [0, 5.95]];
+  const fus = new THREE.LatheGeometry(prof.map(([r, h]) => new THREE.Vector2(r, h)), 28);
+  fus.rotateZ(-Math.PI / 2); fus.translate(0, -0.72, 0);
+  bodyGroup.add(new THREE.Mesh(fus, matBody));
+  const glass = new THREE.Mesh(new THREE.SphereGeometry(0.62, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2.4),
+    new THREE.MeshStandardMaterial({ color: 0x1b2a3f, roughness: 0.15, metalness: 0.4 }));
+  glass.scale.set(1.7, 0.75, 0.98); glass.position.set(-0.8, -0.35, 0);
+  bodyGroup.add(glass);
+  const tf = new NacaAirfoil('0010', 60);
+  const ht = loft(tf, 3, (s, X, Y) => { const z = [-1.75, 0, 1.75][s], c = 1.0 - 0.28 * Math.abs(z) / 1.75; return [4.55 + (1 - c) * 0.35 + c * X, -0.52 + c * Y, z]; });
+  bodyGroup.add(new THREE.Mesh(ht.geo, matBody));
+  const vt = loft(tf, 2, (s, X, Y) => { const y = [-0.45, 1.3][s], c = 1.25 - 0.55 * (y + 0.45) / 1.75, x0 = 4.4 + (y + 0.45) * 0.62; return [x0 + c * X, y, c * Y]; });
+  bodyGroup.add(new THREE.Mesh(vt.geo, matBody));
+  propGroup = new THREE.Group(); propGroup.position.set(-2.6, -0.72, 0);
+  const spin = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.45, 20).rotateZ(Math.PI / 2), matDark);
+  spin.position.x = -0.12;
+  propGroup.add(spin);
+  for (const s of [1, -1]) {
+    const bl = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.95, 0.15), matDark);
+    bl.position.y = 0.5 * s; bl.rotation.y = 0.35 * s;
+    propGroup.add(bl);
+  }
+  propDisc = new THREE.Mesh(new THREE.CircleGeometry(1.0, 40).rotateY(Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0xaab4c4, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
+  propGroup.add(propDisc);
+  bodyGroup.add(propGroup);
+  const wheel = (r) => new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.16, 20).rotateX(Math.PI / 2), matDark);
+  for (const z of [1.25, -1.25]) {
+    const w = wheel(0.28); w.position.set(0.35, -GEAR_H + 0.28, z); bodyGroup.add(w);
+    const st = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.95, 0.05), matBody);
+    st.position.set(0.35, -1.25, z * 0.7); st.rotation.x = z > 0 ? 0.62 : -0.62; bodyGroup.add(st);
+  }
+  const nw = wheel(0.22); nw.position.set(-1.9, -GEAR_H + 0.22, 0); bodyGroup.add(nw);
+  const ns = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.55, 0.06), matBody); ns.position.set(-1.9, -1.45, 0); bodyGroup.add(ns);
+})();
+
+/* ---------------------------------------------------------------------
+ * 7. 4つの力の矢印（長さ ∝ 力の大きさ）
+ * ------------------------------------------------------------------- */
+class Arrow3D {
+  constructor(color, r) {
+    this.r = r;
+    this.group = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 });
+    this.shaft = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 1, 12).translate(0, 0.5, 0), mat);
+    this.head = new THREE.Mesh(new THREE.ConeGeometry(r * 2.6, 1, 16).translate(0, 0.5, 0), mat);
+    this.shaft.renderOrder = this.head.renderOrder = 30;
+    this.group.add(this.shaft, this.head);
+    this.tip = new THREE.Vector3();
+  }
+  set(origin, dir, len) {
+    this.group.visible = len > 0.02;
+    if (!this.group.visible) return;
+    const hl = Math.min(len * 0.4, this.r * 7);
+    this.group.position.copy(origin);
+    this.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    this.shaft.scale.set(1, len - hl, 1);
+    this.head.scale.set(1, hl, 1); this.head.position.y = len - hl;
+    this.tip.copy(dir).multiplyScalar(len).add(origin);
+  }
+}
+const forceGroup = new THREE.Group();
+scene3D.add(forceGroup);
+const FA = {
+  L: new Arrow3D(0x3ddc84, 0.07), D: new Arrow3D(0xff7a45, 0.07),
+  W: new Arrow3D(0xb98cff, 0.07), T: new Arrow3D(0xffc542, 0.07),
+};
+for (const a of Object.values(FA)) forceGroup.add(a.group);
+
+/* ---------------------------------------------------------------------
+ * 8. 翼型まわりの速度場を GPU で「焼き込む」
+ *    パネル法の 3 つの基底解（α=0°, α=90°, 単位循環）が誘導する速度を、
+ *    線形渦パネルの解析式で格子点ごとに計算し、半精度浮動小数テクスチャに保存。
+ *    任意の迎角 α の流れ = (cosα, sinα) + cosα·U0 + sinα·U90 + ΔΓ·UΓ
+ *    （翼型を変えたときだけ再計算。毎フレームの粒子はテクスチャを読むだけ）
+ * ------------------------------------------------------------------- */
+const QUAD_VS = /* glsl */ `varying vec2 vUv; void main(){ vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const quadGeo = new THREE.PlaneGeometry(2, 2);
+const FIELD = {
+  near: { dom: new THREE.Vector4(-0.3, -0.5, 1.4, 0.5), w: 544, h: 320, rt: null },
+  far: { dom: new THREE.Vector4(-3.5, -3.2, 5.0, 3.2), w: 340, h: 256, rt: null },
+  panelTex: null,
+};
+const bakeMat = new THREE.ShaderMaterial({
+  glslVersion: THREE.GLSL3,
+  uniforms: { uPanels: { value: null }, uN: { value: 150 }, uDom: { value: new THREE.Vector4() } },
+  vertexShader: QUAD_VS,
+  fragmentShader: /* glsl */ `
+    precision highp float;
+    precision highp sampler2D;
+    uniform sampler2D uPanels; uniform int uN; uniform vec4 uDom;
+    varying vec2 vUv;
+    layout(location = 0) out vec4 oA;   // (U0.xy, U90.xy)
+    layout(location = 1) out vec4 oB;   // (UΓ.xy, 0, 1)
+    void main() {
+      vec2 P = mix(uDom.xy, uDom.zw, vUv);
+      vec2 v0 = vec2(0.0), v90 = vec2(0.0), vG = vec2(0.0);
+      vec4 A = texelFetch(uPanels, ivec2(0, 0), 0);
+      float gA = texelFetch(uPanels, ivec2(0, 1), 0).x;
+      const float K = 0.15915494309;       // 1/(2π)
+      for (int j = 0; j < 512; j++) {
+        if (j >= uN) break;
+        vec4 B = texelFetch(uPanels, ivec2(j + 1, 0), 0);
+        float gB = texelFetch(uPanels, ivec2(j + 1, 1), 0).x;
+        vec2 d = B.xy - A.xy; float L = length(d); vec2 t = d / L; vec2 n = vec2(-t.y, t.x);
+        vec2 r = P - A.xy; float x = dot(r, t), y = dot(r, n);
+        float r1 = x * x + y * y, r2 = (x - L) * (x - L) + y * y;
+        if (r1 > 1e-12 && r2 > 1e-12) {
+          float dth = atan(y, x - L) - atan(y, x);
+          float lnr = 0.5 * log(r1 / r2);
+          float Iy1 = x * dth - y * lnr, Ix1 = x * lnr - L + y * dth;
+          float ua = -K * (dth - Iy1 / L), va = K * (lnr - Ix1 / L), ub = -K * (Iy1 / L), vb = K * (Ix1 / L);
+          vec2 wa = ua * t + va * n, wb = ub * t + vb * n;
+          v0 += wa * A.z + wb * B.z; v90 += wa * A.w + wb * B.w; vG += wa * gA + wb * gB;
+        }
+        A = B; gA = gB;
+      }
+      oA = vec4(v0, v90); oB = vec4(vG, 0.0, 1.0);
+    }`,
+});
+const bakeScene = new THREE.Scene();
+bakeScene.add(new THREE.Mesh(quadGeo, bakeMat));
+
+function bakeField() {
+  if (!HALF_RT) return;
+  const pn = aircraft.panel, foil = aircraft.foil, N1 = pn.N + 1;
+  const data = new Float32Array(N1 * 2 * 4);
+  for (let j = 0; j < N1; j++) {
+    data.set([foil.x[j], foil.y[j], pn.g0[j], pn.g90[j]], j * 4);
+    data[(N1 + j) * 4] = pn.gG[j];
+  }
+  if (FIELD.panelTex) FIELD.panelTex.dispose();
+  FIELD.panelTex = new THREE.DataTexture(data, N1, 2, THREE.RGBAFormat, THREE.FloatType);
+  FIELD.panelTex.needsUpdate = true;
+  bakeMat.uniforms.uPanels.value = FIELD.panelTex;
+  bakeMat.uniforms.uN.value = pn.N;
+  for (const lv of [FIELD.near, FIELD.far]) {
+    if (!lv.rt) {
+      lv.rt = new THREE.WebGLRenderTarget(lv.w, lv.h, {
+        count: 2, type: THREE.HalfFloatType, format: THREE.RGBAFormat, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+        depthBuffer: false, generateMipmaps: false,
+      });
+    }
+    bakeMat.uniforms.uDom.value.copy(lv.dom);
+    renderer.setRenderTarget(lv.rt);
+    renderer.render(bakeScene, quadCam);
+  }
+  renderer.setRenderTarget(null);
+}
+
+// 粒子シェーダ共通部：翼型の形・焼き込んだ速度場の読み出し・はく離域の乱れ
+const GLSL_FIELD = /* glsl */ `
+uniform sampler2D uNearA, uNearB, uFarA, uFarB;
+uniform vec4 uNearDom, uFarDom;
+uniform vec3 uNaca;       // (m, p, t)
+uniform float uTime;
+float nacaYt(float x) { x = clamp(x, 0.0, 1.0); float t = uNaca.z;
+  return 5.0 * t * (0.2969 * sqrt(x) - 0.1260 * x - 0.3516 * x * x + 0.2843 * x * x * x - 0.1036 * x * x * x * x); }
+float nacaYc(float x) { float m = uNaca.x, p = uNaca.y; if (m <= 0.0 || p <= 0.0) return 0.0; x = clamp(x, 0.0, 1.0);
+  return x < p ? m / (p * p) * (2.0 * p * x - x * x) : m / ((1.0 - p) * (1.0 - p)) * ((1.0 - 2.0 * p) + 2.0 * p * x - x * x); }
+bool insideFoil(vec2 q) { if (q.x <= 0.002 || q.x >= 0.998) return false; return abs(q.y - nacaYc(q.x)) < nacaYt(q.x); }
+// 断面まわりの誘導速度（V∞=1 で無次元）。ca=cosα, sa=sinα, dG=循環の補正
+vec2 secPert(vec2 q, float ca, float sa, float dG) {
+  vec2 uvF = (q - uFarDom.xy) / (uFarDom.zw - uFarDom.xy);
+  vec2 ef = min(uvF, 1.0 - uvF);
+  float wf = smoothstep(0.0, 0.12, min(ef.x, ef.y));
+  if (wf <= 0.0) return vec2(0.0);
+  vec4 a = textureLod(uFarA, uvF, 0.0); vec2 g = textureLod(uFarB, uvF, 0.0).xy;
+  vec2 v = ca * a.xy + sa * a.zw + dG * g;
+  vec2 uvN = (q - uNearDom.xy) / (uNearDom.zw - uNearDom.xy);
+  vec2 en = min(uvN, 1.0 - uvN);
+  float wn = smoothstep(0.0, 0.05, min(en.x, en.y));
+  if (wn > 0.0) {
+    vec4 an = textureLod(uNearA, uvN, 0.0); vec2 gn = textureLod(uNearB, uvN, 0.0).xy;
+    v = mix(v, ca * an.xy + sa * an.zw + dG * gn, wn);
+  }
+  return v * wf;
+}
+// 失速時：はく離点 f より後ろ、翼面近くの流れを遅く・乱れたものにする（模式表示）
+//   後縁より後ろでは、後縁から一様流の方向（傾き ta = tanα）へ伸びる後流帯とする
+vec2 sepMod(vec2 q, vec2 v, float f, float side, float ta) {
+  float s = 1.0 - f;
+  if (s < 0.03 || q.x < f - 0.03 || q.x > 1.0 + 2.5 * s) return v;
+  float ys = q.x < 1.0 ? nacaYc(q.x) + side * nacaYt(q.x) : (q.x - 1.0) * ta;
+  float d = (q.y - ys) * side;
+  float th = 0.02 + 0.6 * s * clamp(q.x - f, 0.0, 1.2);
+  if (d < -0.02 || d > th) return v;
+  float k = (1.0 - clamp(d / th, 0.0, 1.0)) * smoothstep(0.03, 0.3, s);
+  vec2 n = vec2(sin(q.y * 29.0 + uTime * 6.3 + sin(q.x * 11.0 - uTime * 4.0)), cos(q.x * 23.0 - uTime * 5.1 + sin(q.y * 17.0 + uTime * 3.0)));
+  return mix(v, v * 0.15 + n * 0.4 * length(v), k);
+}`;
+function fieldUniforms() {
+  return {
+    uNearA: { value: FIELD.near.rt ? FIELD.near.rt.textures[0] : null }, uNearB: { value: FIELD.near.rt ? FIELD.near.rt.textures[1] : null },
+    uFarA: { value: FIELD.far.rt ? FIELD.far.rt.textures[0] : null }, uFarB: { value: FIELD.far.rt ? FIELD.far.rt.textures[1] : null },
+    uNearDom: { value: FIELD.near.dom }, uFarDom: { value: FIELD.far.dom },
+    uNaca: { value: new THREE.Vector3() }, uTime: { value: 0 },
+  };
+}
+
+/* ---------------------------------------------------------------------
+ * 9. GPU 粒子（GPGPU：位置と速度を浮動小数テクスチャに持ち、ピンポンで更新）
+ *    2D：断面の速度場のみ。3D：局所の有効迎角での断面場 × スパン窓
+ *        ＋ 後流渦糸（ビオ・サバール）の誘導速度（翼端渦・吹き下ろし）
+ * ------------------------------------------------------------------- */
+const SIM_FS = /* glsl */ `
+precision highp float;
+precision highp sampler2D;
+uniform sampler2D tPos, tVel;
+uniform vec2 uRes;
+uniform float uDt, uU, uInit, uMaxAge;
+uniform vec2 uDir;               // 一様流の向き（翼断面座標）
+uniform vec3 uDomMin, uDomMax;   // 風軸座標での表示領域
+layout(location = 0) out vec4 oPos;
+layout(location = 1) out vec4 oVel;
+${GLSL_FIELD}
+float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+#ifdef MODE3D
+uniform sampler2D uSpan;         // 64×1: (翼弦, 有効迎角, 循環補正, はく離点)
+uniform float uHalfSpan, uCroot, uRc2;
+uniform vec4 uFil[48];           // 後流渦糸（片側）: 4 点 × 12 本, 1 点目の w = 強さ
+uniform int uNF;
+vec4 spanAt(float eta) {
+  float u = clamp(eta, 0.0, 1.0) * 63.0; int i = int(floor(u)); int j = min(i + 1, 63);
+  return mix(texelFetch(uSpan, ivec2(i, 0), 0), texelFetch(uSpan, ivec2(j, 0), 0), u - float(i));
+}
+vec3 seg(vec3 p, vec3 a, vec3 b, float s) {       // ビオ・サバール（有限線分, 渦核付き）
+  vec3 r1 = p - a, r2 = p - b, r0 = b - a, c = cross(r1, r2);
+  float den = dot(c, c) + uRc2 * dot(r0, r0);
+  float d = dot(r0, r1 / max(length(r1), 1e-5) - r2 / max(length(r2), 1e-5));
+  return c * (s * 0.0795774715 * d / max(den, 1e-10));
+}
+vec3 wakeV(vec3 p) {
+  vec3 u = vec3(0.0), m = vec3(1.0, 1.0, -1.0);
+  for (int i = 0; i < 12; i++) {
+    if (i >= uNF) break;
+    vec4 A = uFil[i * 4], B = uFil[i * 4 + 1], C = uFil[i * 4 + 2], D = uFil[i * 4 + 3];
+    float s = A.w;
+    u += seg(p, A.xyz, B.xyz, s) + seg(p, B.xyz, C.xyz, s) + seg(p, C.xyz, D.xyz, s);
+    u -= seg(p, A.xyz * m, B.xyz * m, s) + seg(p, B.xyz * m, C.xyz * m, s) + seg(p, C.xyz * m, D.xyz * m, s);
+  }
+  return u;
+}
+vec3 flow(vec3 p) {
+  vec3 v = vec3(uDir, 0.0);
+  float az = abs(p.z);
+  if (az < uHalfSpan + 0.6 * uCroot) {
+    vec4 sp = spanAt(az / uHalfSpan);
+    float c = max(sp.x, 0.05 * uCroot);
+    vec2 q = vec2(p.x / c + 0.25, p.y / c);
+    float w = 1.0 - smoothstep(uHalfSpan - 0.1 * c, uHalfSpan + 0.45 * c, az);
+    vec2 vs = sepMod(q, uDir + secPert(q, cos(sp.y), sin(sp.y), sp.z), sp.w, sp.y >= 0.0 ? 1.0 : -1.0, tan(sp.y)) - uDir;
+    v.xy += vs * w;
+  }
+  return v + wakeV(p);
+}
+bool inside(vec3 p) {
+  float az = abs(p.z);
+  if (az > uHalfSpan) return false;
+  float c = max(spanAt(az / uHalfSpan).x, 0.05 * uCroot);
+  return insideFoil(vec2(p.x / c + 0.25, p.y / c));
+}
+vec4 spawn(vec2 uv, bool first) {
+  float r0 = hash(uv * 3.3 + uTime * 0.11), r1 = hash(uv + uTime * 0.37), r2 = hash(uv * 1.7 + uTime * 0.73 + 3.1), r3 = hash(uv * 2.9 - uTime * 0.29 + 7.7);
+  float xw = first ? mix(uDomMin.x, uDomMax.x, r1) : uDomMin.x + r1 * 0.03 * (uDomMax.x - uDomMin.x);
+  float B = 2.0 * uHalfSpan, yw, z, tag = 0.0;
+  if (r0 < 0.66) { yw = (r2 * 2.0 - 1.0) * 0.16 * B; z = (r3 * 2.0 - 1.0) * 0.62 * B; }
+  else if (r0 < 0.92) { yw = (r2 * 2.0 - 1.0) * 0.05 * B; z = (r3 < 0.5 ? -1.0 : 1.0) * (uHalfSpan + (fract(r3 * 2.0) * 2.0 - 1.0) * 0.07 * B); tag = 1.0; }
+  else { yw = mix(uDomMin.y, uDomMax.y, r2); z = mix(-uDomMax.z, uDomMax.z, r3); }
+  vec2 n = vec2(-uDir.y, uDir.x);
+  return vec4(xw * uDir + yw * n, z, tag);
+}
+#else
+uniform float uCa, uSa, uDG, uF, uSide;
+vec3 flow(vec3 p) { vec2 v = uDir + secPert(p.xy, uCa, uSa, uDG); return vec3(sepMod(p.xy, v, uF, uSide, uSa / uCa), 0.0); }
+bool inside(vec3 p) { return insideFoil(p.xy); }
+vec4 spawn(vec2 uv, bool first) {
+  float r1 = hash(uv + uTime * 0.37), r2 = hash(uv * 1.7 + uTime * 0.73 + 3.1);
+  float xw = first ? mix(uDomMin.x, uDomMax.x, r1) : uDomMin.x + r1 * 0.04 * (uDomMax.x - uDomMin.x);
+  float yw = mix(uDomMin.y, uDomMax.y, r2);
+  vec2 n = vec2(-uDir.y, uDir.x);
+  return vec4(xw * uDir + yw * n, 0.0, 0.0);
+}
+#endif
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec4 P = texture(tPos, uv);
+  float tag = texture(tVel, uv).w;
+  vec3 p = P.xyz; float age = P.w;
+  bool dead = uInit > 0.5;
+  vec3 v = vec3(0.0);
+  if (!dead) {
+    float h = uU * uDt;
+    vec3 k1 = flow(p);
+    vec3 k2 = flow(p + k1 * h);          // ホイン法（2 次）で流れに沿って移動
+    v = 0.5 * (k1 + k2);
+    p += v * h;
+    age += uDt;
+    vec2 w = vec2(dot(p.xy, uDir), dot(p.xy, vec2(-uDir.y, uDir.x)));
+    if (w.x > uDomMax.x || w.x < uDomMin.x - 0.5 || w.y > uDomMax.y || w.y < uDomMin.y || abs(p.z) > uDomMax.z || age > uMaxAge || inside(p)) dead = true;
+  }
+  if (dead) { vec4 s = spawn(uv, uInit > 0.5); p = s.xyz; tag = s.w; age = 0.0; v = flow(p); }
+  oPos = vec4(p, age); oVel = vec4(v, tag);
+}`;
+
+const PART_VS = /* glsl */ `
+precision highp float;
+uniform sampler2D tPos, tVel;
+uniform float uTrail, uWidth, uU, uAlpha, uFaint;
+uniform int uColorMode;
+attribute vec2 aRef;
+varying vec3 vCol; varying float vA; varying vec2 vC;
+${GLSL_COLOR}
+void main() {
+  vec4 P = texture2D(tPos, aRef), Vv = texture2D(tVel, aRef);
+  vec3 head = P.xyz, vel = Vv.xyz;
+  vec3 tail = head - vel * uU * uTrail;
+  vec4 hv = modelViewMatrix * vec4(head, 1.0), tv = modelViewMatrix * vec4(tail, 1.0);
+  vec4 mv = mix(tv, hv, position.x);
+  vec2 d = hv.xy - tv.xy; float dl = length(d);
+  vec2 dir = dl > 1e-6 ? d / dl : vec2(1.0, 0.0);
+  mv.xy += vec2(-dir.y, dir.x) * position.y * uWidth;
+  gl_Position = projectionMatrix * mv;
+  float sp = length(vel);
+  float cp = 1.0 - sp * sp;
+  vCol = uColorMode == 0 ? cpColor(cp) : speedColor(sp);
+  // 一様流に近い粒子は淡く、流れが変化している所（翼の近く・渦）は濃く
+  float emph = clamp(abs(cp) * 3.0, 0.0, 1.0);
+  vA = uAlpha * smoothstep(0.0, 0.4, P.w) * mix(uFaint, 1.0, max(emph, Vv.w * 0.6));
+  vC = position.xy;
+}`;
+const PART_FS = /* glsl */ `
+varying vec3 vCol; varying float vA; varying vec2 vC;
+void main() {
+  float a = vA * (0.2 + 0.8 * vC.x) * (1.0 - vC.y * vC.y);
+  if (a < 0.01) discard;
+  gl_FragColor = vec4(vCol, a);
+}`;
+
+class ParticleSystem {
+  constructor(kind, tw, th) {
+    this.kind = kind; this.tw = tw; this.th = th; this.n = tw * th;
+    const type = FLOAT_RT ? THREE.FloatType : THREE.HalfFloatType;
+    const mk = () => new THREE.WebGLRenderTarget(tw, th, {
+      count: 2, type, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      depthBuffer: false, generateMipmaps: false,
+    });
+    this.rtA = mk(); this.rtB = mk();
+    const U = {
+      tPos: { value: null }, tVel: { value: null }, uRes: { value: new THREE.Vector2(tw, th) },
+      uDt: { value: 0 }, uU: { value: 1 }, uInit: { value: 1 }, uMaxAge: { value: 30 },
+      uDir: { value: new THREE.Vector2(1, 0) }, uDomMin: { value: new THREE.Vector3() }, uDomMax: { value: new THREE.Vector3() },
+      ...fieldUniforms(),
+    };
+    if (kind === '3d') {
+      Object.assign(U, {
+        uSpan: { value: SPAN_TEX }, uHalfSpan: { value: 5 }, uCroot: { value: 1.5 }, uRc2: { value: 0.1 },
+        uFil: { value: Array.from({ length: 48 }, () => new THREE.Vector4()) }, uNF: { value: 0 },
+      });
+    } else {
+      Object.assign(U, { uCa: { value: 1 }, uSa: { value: 0 }, uDG: { value: 0 }, uF: { value: 1 }, uSide: { value: 1 } });
+    }
+    this.simMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3, uniforms: U, vertexShader: QUAD_VS,
+      fragmentShader: (kind === '3d' ? '#define MODE3D\n' : '') + SIM_FS,
+    });
+    this.qScene = new THREE.Scene();
+    this.qScene.add(new THREE.Mesh(quadGeo, this.simMat));
+    // 描画：速度方向に伸ばした四角形をインスタンス描画
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute([0, -1, 0, 1, -1, 0, 0, 1, 0, 1, 1, 0], 3));
+    geo.setIndex([0, 1, 2, 2, 1, 3]);
+    const ref = new Float32Array(this.n * 2);
+    for (let i = 0; i < this.n; i++) { ref[i * 2] = ((i % tw) + 0.5) / tw; ref[i * 2 + 1] = (Math.floor(i / tw) + 0.5) / th; }
+    geo.setAttribute('aRef', new THREE.InstancedBufferAttribute(ref, 2));
+    geo.instanceCount = this.n;
+    this.renderMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tPos: { value: null }, tVel: { value: null }, uTrail: { value: 0.1 }, uWidth: { value: 0.02 },
+        uU: { value: 1 }, uAlpha: { value: 0.85 }, uFaint: { value: 0.3 }, uColorMode: { value: 0 },
+      },
+      vertexShader: PART_VS, fragmentShader: PART_FS, transparent: true, depthWrite: false,
+    });
+    this.mesh = new THREE.Mesh(geo, this.renderMat);
+    this.mesh.frustumCulled = false; this.mesh.renderOrder = 5;
+    this.needsInit = true;
+    this.time = 0;
+  }
+  get u() { return this.simMat.uniforms; }
+  compute(dt) {
+    if (dt <= 0 && !this.needsInit) return;
+    this.time += dt;
+    const u = this.simMat.uniforms;
+    u.tPos.value = this.rtA.textures[0]; u.tVel.value = this.rtA.textures[1];
+    u.uDt.value = dt; u.uTime.value = this.time; u.uInit.value = this.needsInit ? 1 : 0;
+    renderer.setRenderTarget(this.rtB);
+    renderer.render(this.qScene, quadCam);
+    renderer.setRenderTarget(null);
+    [this.rtA, this.rtB] = [this.rtB, this.rtA];
+    this.needsInit = false;
+    this.renderMat.uniforms.tPos.value = this.rtA.textures[0];
+    this.renderMat.uniforms.tVel.value = this.rtA.textures[1];
+  }
+  refreshField() {
+    const f = fieldUniforms(), u = this.simMat.uniforms;
+    for (const k of ['uNearA', 'uNearB', 'uFarA', 'uFarB']) u[k].value = f[k].value;
+  }
+  dispose() {
+    this.rtA.dispose(); this.rtB.dispose(); this.simMat.dispose(); this.renderMat.dispose(); this.mesh.geometry.dispose();
+    if (this.mesh.parent) this.mesh.parent.remove(this.mesh);
+  }
+}
+// スパン方向の断面データ（翼弦・有効迎角・循環補正・はく離点）
+const SPAN_DATA = new Float32Array(64 * 4);
+const SPAN_TEX = new THREE.DataTexture(SPAN_DATA, 64, 1, THREE.RGBAFormat, THREE.FloatType);
+SPAN_TEX.needsUpdate = true;
+
+const TIERS = [[64, 32], [64, 64], [128, 64], [128, 128], [256, 128]];
+const PARTS = { tier: isMobile ? 1 : (navigator.hardwareConcurrency || 4) >= 8 ? 3 : 2, p3: null, p2: null };
+function getParticles(kind) {
+  if (!HALF_RT) return null;
+  const key = kind === '3d' ? 'p3' : 'p2';
+  if (!PARTS[key]) {
+    const [w, h] = TIERS[PARTS.tier];
+    PARTS[key] = new ParticleSystem(kind, w, kind === '3d' ? h : Math.max(16, h / 2));   // 2D は半分の数で線を長く
+    (kind === '3d' ? acGroup : secFoil).add(PARTS[key].mesh);
+  }
+  return PARTS[key];
+}
+function setTier(t) {
+  t = clamp(t, 0, TIERS.length - 1);
+  if (t === PARTS.tier && PARTS.p3 && PARTS.p2) return;
+  PARTS.tier = t;
+  for (const k of ['p3', 'p2']) if (PARTS[k]) { PARTS[k].dispose(); PARTS[k] = null; }
+}
+
+/* ---------------------------------------------------------------------
+ * 10. 後流の可視化：翼端渦（流線をたどったらせん）、吹き下ろし矢印、循環分布
+ * ------------------------------------------------------------------- */
+const wakeGroup = new THREE.Group();          // 機体座標（acGroup の子）
+acGroup.add(wakeGroup);
+const vortexGroup = new THREE.Group(); wakeGroup.add(vortexGroup);
+const vortexMat = new THREE.MeshBasicMaterial({ color: 0xcdefff, transparent: true, opacity: 0.55, depthWrite: false });
+const dwGroup = new THREE.Group(); wakeGroup.add(dwGroup);
+const dwArrows = [];
+for (let r = 0; r < 2; r++) for (let i = 0; i < 17; i++) {
+  const a = new THREE.ArrowHelper(new THREE.Vector3(0, -1, 0), new THREE.Vector3(), 1, 0x5ad1ff, 0.25, 0.14);
+  a.line.material.transparent = true; a.line.material.opacity = 0.9;
+  dwGroup.add(a); dwArrows.push({ a, row: r, i });
+}
+const gammaGroup = new THREE.Group(); wakeGroup.add(gammaGroup);
+const gammaFill = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: 0x3ddc84, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }));
+const gammaLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x7dffb2 }));
+gammaGroup.add(gammaFill, gammaLine);
+{
+  const n = 2 * NSH + 1;
+  gammaFill.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 2 * 3), 3));
+  const idx = [];
+  for (let i = 0; i < n - 1; i++) { const a = 2 * i; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  gammaFill.geometry.setIndex(idx);
+  gammaLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+}
+let spanHalf = null, span64 = null;
+let lastAeroKey = NaN, lastAeroVersion = -1, vortexTimer = 0, vortexDirty = true, vortexKey = NaN, vortexVersion = -1;
+
+function updateAeroVisuals() {
+  const a = S.alpha;
+  if (Math.abs(a - lastAeroKey) < 0.01 * DEG && lastAeroVersion === aircraft.version) return;
+  lastAeroKey = a; lastAeroVersion = aircraft.version;
+  const wing = aircraft.wing;
+  spanHalf = wing.spanState(a, ETA_HALF);
+  span64 = wing.spanState(a, ETA64);
+  updateWingColors();
+  // スパン方向テクスチャ（3D 粒子用）
+  for (let i = 0; i < 64; i++) {
+    SPAN_DATA[i * 4] = Math.max(span64.chord[i], 0.02 * wing.cRoot);
+    SPAN_DATA[i * 4 + 1] = span64.ae[i];
+    SPAN_DATA[i * 4 + 2] = 0.5 * (span64.cl[i] - span64.clAtt[i]);
+    SPAN_DATA[i * 4 + 3] = span64.f[i];
+  }
+  SPAN_TEX.needsUpdate = true;
+  // 後流渦糸
+  wake.build(wing, a, { M: PARTS.tier <= 1 ? 6 : 10 });
+  if (PARTS.p3) {
+    const u = PARTS.p3.u;
+    wake.fil.forEach((f, i) => { for (let k = 0; k < 4; k++) u.uFil.value[i * 4 + k].set(f.pts[k][0], f.pts[k][1], f.pts[k][2], k === 0 ? f.s : 0); });
+    u.uNF.value = wake.fil.length; u.uRc2.value = wake.rc * wake.rc;
+  }
+  updateDownwash();
+  updateGammaCurve();
+  if (Math.abs(a - vortexKey) > 0.25 * DEG || vortexVersion !== aircraft.version) vortexDirty = true;
+}
+
+function updateWingColors() {
+  if (!WING.mesh || !spanHalf) return;
+  const col = WING.colors.array, N1 = WING.N1;
+  if (!LAYERS.cp) {
+    if (!WING.gray) { col.fill(0.55); WING.colors.needsUpdate = true; WING.gray = true; }
+    return;
+  }
+  WING.gray = false;
+  const buf = WING.cpBuf && WING.cpBuf.length === N1 ? WING.cpBuf : (WING.cpBuf = new Float64Array(N1));
+  for (let i = 0; i <= NSH; i++) {
+    aircraft.section.cpFromState(spanHalf.cl[i], spanHalf.f[i], spanHalf.abar[i] >= 0, buf);
+    for (const s of i === 0 ? [NSH] : [NSH - i, NSH + i]) {
+      let o = s * N1 * 3;
+      for (let j = 0; j < N1; j++) { const k = cpLutIndex(buf[j]); col[o++] = cpLUT[k]; col[o++] = cpLUT[k + 1]; col[o++] = cpLUT[k + 2]; }
+    }
+  }
+  WING.colors.needsUpdate = true;
+}
+
+const _dw = [0, 0, 0];
+function updateDownwash() {
+  const wing = aircraft.wing, b = wing.b, a = S.alpha, ca = Math.cos(a), sa = Math.sin(a);
+  const ai = spanHalf ? spanHalf.ai[0] : 0, xte = 0.75 * wing.cRoot, scale = 28 * Math.max(1, b / 11);
+  for (const { a: arr, row, i } of dwArrows) {
+    const s = row === 0 ? 0.9 * wing.cRoot : 1.3 * b;
+    const z = (-0.8 + (1.6 * i) / 16) * b;
+    const px = xte + s * ca, py = s * sa - 1.5 * ai * s;
+    wake.induced(px, py, z, _dw);
+    const along = _dw[0] * ca + _dw[1] * sa;
+    const wx = _dw[0] - along * ca, wy = _dw[1] - along * sa, wz = _dw[2];
+    const m = Math.hypot(wx, wy, wz), len = m * scale;
+    arr.position.set(px, py, z);
+    if (m > 1e-6) arr.setDirection(new THREE.Vector3(wx / m, wy / m, wz / m));
+    arr.setLength(Math.max(len, 0.02), Math.min(0.3, len * 0.4), Math.min(0.16, len * 0.3));
+    arr.setColor(wx * -sa + wy * ca < 0 ? 0x5ad1ff : 0xffa94d);   // 下向き＝水色, 上向き＝橙
+  }
+}
+
+function updateGammaCurve() {
+  const wing = aircraft.wing, hb = wing.b / 2, k = 1.2 / (0.05 * wing.b);
+  const fp = gammaFill.geometry.attributes.position, lp = gammaLine.geometry.attributes.position;
+  for (let s = 0; s <= 2 * NSH; s++) {
+    const u = (s - NSH) / NSH, i = Math.abs(s - NSH), z = Math.sign(u) * ETA_HALF[i] * hb;
+    const h = 0.08 + Math.max(spanHalf.gamma[i], 0) * k;
+    fp.setXYZ(2 * s, 0, 0.08, z); fp.setXYZ(2 * s + 1, 0, h, z); lp.setXYZ(s, 0, h, z);
+  }
+  fp.needsUpdate = true; lp.needsUpdate = true;
+  gammaFill.geometry.computeBoundingSphere(); gammaLine.geometry.computeBoundingSphere();
+}
+
+function rebuildVortexLines() {
+  vortexKey = S.alpha; vortexVersion = aircraft.version;
+  for (const m of vortexGroup.children) m.geometry.dispose();
+  vortexGroup.clear();
+  const wing = aircraft.wing, hb = wing.b / 2, a = S.alpha;
+  if (Math.abs(wake.gammaRoot) < 1e-3) return;
+  const xte = 0.75 * Math.max(wing.chord(1), 0.03 * wing.cRoot), rc = wake.rc, len = 2.3 * wing.b, ds = 0.06 * Math.max(1, wing.b / 11);
+  const steps = Math.round(len / ds);
+  const seeds = [];
+  for (const r of [0.45, 0.9]) for (let k = 0; k < 4; k++) {
+    const t = (k / 4) * Math.PI * 2 + r;
+    seeds.push([xte + 0.05, r * rc * Math.cos(t), hb * 0.985 + r * rc * Math.sin(t) * 0.6]);
+  }
+  for (const sd of seeds) {
+    const pts = wake.trace(sd, a, ds, steps);
+    const v3 = [];
+    for (let i = 0; i < pts.length; i += 3) v3.push(new THREE.Vector3(pts[i][0], pts[i][1], pts[i][2]));
+    if (v3.length < 4) continue;
+    const curve = new THREE.CatmullRomCurve3(v3);
+    for (const sgn of [1, -1]) {
+      const g = new THREE.TubeGeometry(curve, v3.length * 2, 0.022 * Math.max(1, wing.b / 11), 5, false);
+      if (sgn < 0) g.scale(1, 1, -1);
+      const m = new THREE.Mesh(g, vortexMat); m.renderOrder = 6;
+      vortexGroup.add(m);
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------
+ * 11. 翼断面 2D ビュー（風洞：風は左→右に水平、翼が迎角 α だけ機首上げ）
+ * ------------------------------------------------------------------- */
+const secPivot = new THREE.Group(); secPivot.position.set(0.25, 0, 0); sceneSec.add(secPivot);
+const secFoil = new THREE.Group(); secFoil.position.set(-0.25, 0, 0); secPivot.add(secFoil);   // 翼断面座標
+const SEC = { fill: null, ribbon: null, arrows: null, arrowIdx: [], cp: null, normals: null, stag: null, chord: null };
+{
+  // 背景の方眼（風軸）
+  const pts = [];
+  for (let x = -3; x <= 5.001; x += 0.25) pts.push(x, -3, -1, x, 3, -1);
+  for (let y = -3; y <= 3.001; y += 0.25) pts.push(-3, y, -1, 5, y, -1);
+  const grid = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)),
+    new THREE.LineBasicMaterial({ color: 0x14233a }));
+  sceneSec.add(grid);
+  const ref = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.2, 0, 0.01), new THREE.Vector3(1.35, 0, 0.01)]),
+    new THREE.LineDashedMaterial({ color: 0x51627a, dashSize: 0.03, gapSize: 0.03 }));
+  ref.computeLineDistances();
+  secPivot.add(ref); ref.position.x = -0.25;      // 風の方向（水平）の基準線
+}
+class Arrow2D {
+  constructor(color, w = 0.012) {
+    this.w = w; this.len = -1;
+    this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthTest: false }));
+    this.mesh.renderOrder = 40;
+    this.tip = new THREE.Vector3();
+  }
+  set(x, y, dx, dy, len) {
+    this.mesh.visible = len > 1e-3;
+    if (!this.mesh.visible) return;
+    if (Math.abs(len - this.len) > 1e-4) {
+      const w = this.w, hl = Math.min(len * 0.4, w * 4), sh = new THREE.Shape();
+      sh.moveTo(0, -w / 2); sh.lineTo(len - hl, -w / 2); sh.lineTo(len - hl, -w * 1.8); sh.lineTo(len, 0);
+      sh.lineTo(len - hl, w * 1.8); sh.lineTo(len - hl, w / 2); sh.lineTo(0, w / 2); sh.closePath();
+      this.mesh.geometry.dispose(); this.mesh.geometry = new THREE.ShapeGeometry(sh); this.len = len;
+    }
+    this.mesh.position.set(x, y, 0.2); this.mesh.rotation.z = Math.atan2(dy, dx);
+    this.tip.set(x + dx * len, y + dy * len, 0.2);
+  }
+}
+const SA = { L: new Arrow2D(0x3ddc84), D: new Arrow2D(0xff7a45), V: new Arrow2D(0x9fb4cc, 0.01) };
+for (const a of Object.values(SA)) sceneSec.add(a.mesh);
+
+function buildSection() {
+  for (const k of ['fill', 'ribbon', 'arrows', 'stag', 'chord']) if (SEC[k]) { SEC[k].geometry.dispose(); secFoil.remove(SEC[k]); }
+  const foil = aircraft.foil, pn = aircraft.panel, N1 = pn.N + 1;
+  const shape = new THREE.Shape();
+  shape.moveTo(foil.x[0], foil.y[0]);
+  for (let j = 1; j < N1; j++) shape.lineTo(foil.x[j], foil.y[j]);
+  SEC.fill = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({ color: 0x222c3d }));
+  SEC.fill.position.z = 0.05;
+  // 節点の外向き法線
+  SEC.normals = new Float64Array(N1 * 2);
+  for (let j = 0; j < N1; j++) {
+    const a = Math.max(0, j - 1), b = Math.min(pn.N - 1, j);
+    let nx = -(pn.st[a] + pn.st[b]), ny = pn.ct[a] + pn.ct[b];
+    const m = Math.hypot(nx, ny) || 1; SEC.normals[j * 2] = nx / m; SEC.normals[j * 2 + 1] = ny / m;
+  }
+  // Cp で色づけした翼面のリボン
+  const rp = new Float32Array(N1 * 2 * 3), w = 0.016, idx = [];
+  for (let j = 0; j < N1; j++) {
+    const nx = SEC.normals[j * 2], ny = SEC.normals[j * 2 + 1];
+    rp.set([foil.x[j], foil.y[j], 0.06, foil.x[j] + nx * w, foil.y[j] + ny * w, 0.06], j * 6);
+    if (j < N1 - 1) { const a = 2 * j; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  }
+  const rg = new THREE.BufferGeometry();
+  rg.setAttribute('position', new THREE.BufferAttribute(rp, 3));
+  rg.setAttribute('color', new THREE.BufferAttribute(new Float32Array(N1 * 2 * 3), 3));
+  rg.setIndex(idx);
+  SEC.ribbon = new THREE.Mesh(rg, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  // 圧力矢印（翼面に垂直、長さ ∝ |Cp|）
+  SEC.arrowIdx = [];
+  for (let j = 1; j < N1 - 1; j += 3) if (foil.x[j] < 0.97) SEC.arrowIdx.push(j);
+  const ag = new THREE.BufferGeometry();
+  ag.setAttribute('position', new THREE.BufferAttribute(new Float32Array(SEC.arrowIdx.length * 6 * 3), 3));
+  ag.setAttribute('color', new THREE.BufferAttribute(new Float32Array(SEC.arrowIdx.length * 6 * 3), 3));
+  SEC.arrows = new THREE.LineSegments(ag, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9 }));
+  SEC.arrows.position.z = 0.07; SEC.arrows.frustumCulled = false;
+  SEC.stag = new THREE.Mesh(new THREE.RingGeometry(0.012, 0.022, 20), new THREE.MeshBasicMaterial({ color: 0xffe066 }));
+  SEC.stag.position.z = 0.08;
+  SEC.chord = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0.055), new THREE.Vector3(1, 0, 0.055)]),
+    new THREE.LineDashedMaterial({ color: 0x7f8ea3, dashSize: 0.02, gapSize: 0.015 }));
+  SEC.chord.computeLineDistances();
+  SEC.cp = new Float64Array(N1);
+  secFoil.add(SEC.fill, SEC.ribbon, SEC.arrows, SEC.stag, SEC.chord);
+  lastSecKey = NaN;
+}
+
+let secState = { a: 0, cl: 0, cd: 0, f: 1, dG: 0, clAtt: 0, cm: 0 }, lastSecKey = NaN;
+function sectionAlpha() { return P.secAlphaMode === 'eff' && spanHalf ? spanHalf.ae[0] : S.alpha; }
+function updateSection() {
+  const a = sectionAlpha(), sec = aircraft.section, lk = sec.lookup(a, {});
+  secState = { a, cl: lk.cl, f: lk.f, clAtt: sec.clAtt(a), dG: sec.circulationDeficit(a), cd: sec.cd(a, S.aero.Re || 3e6) };
+  secPivot.rotation.z = -a;
+  if (Math.abs(a - lastSecKey) < 0.01 * DEG) return;
+  lastSecKey = a;
+  const foil = aircraft.foil, N1 = foil.x.length, cp = sec.nodeCp(a, SEC.cp);
+  // リボンの色
+  const rc = SEC.ribbon.geometry.attributes.color, c = [0, 0, 0];
+  for (let j = 0; j < N1; j++) { cpColor(cp[j], c); rc.setXYZ(2 * j, c[0], c[1], c[2]); rc.setXYZ(2 * j + 1, c[0], c[1], c[2]); }
+  rc.needsUpdate = true;
+  // 圧力矢印：負圧は翼面から外向き（吸い出す）、正圧は外から翼面へ（押す）
+  const ap = SEC.arrows.geometry.attributes.position, ac = SEC.arrows.geometry.attributes.color;
+  SEC.arrowIdx.forEach((j, k) => {
+    const x = foil.x[j], y = foil.y[j], nx = SEC.normals[j * 2], ny = SEC.normals[j * 2 + 1];
+    const L = Math.min(Math.abs(cp[j]), 4) * 0.075;
+    const out = cp[j] < 0;
+    const x0 = out ? x : x + nx * L, y0 = out ? y : y + ny * L, x1 = out ? x + nx * L : x, y1 = out ? y + ny * L : y;
+    const dx = x1 - x0, dy = y1 - y0, m = Math.hypot(dx, dy) || 1, hl = Math.min(0.018, L * 0.45);
+    const ux = dx / m, uy = dy / m, cs = Math.cos(0.45), sn = Math.sin(0.45);
+    const h1x = x1 - hl * (ux * cs - uy * sn), h1y = y1 - hl * (uy * cs + ux * sn);
+    const h2x = x1 - hl * (ux * cs + uy * sn), h2y = y1 - hl * (uy * cs - ux * sn);
+    const o = k * 6;
+    ap.setXYZ(o, x0, y0, 0); ap.setXYZ(o + 1, x1, y1, 0); ap.setXYZ(o + 2, x1, y1, 0); ap.setXYZ(o + 3, h1x, h1y, 0);
+    ap.setXYZ(o + 4, x1, y1, 0); ap.setXYZ(o + 5, h2x, h2y, 0);
+    const col = out ? [0.45, 0.72, 1.0] : [1.0, 0.55, 0.3];
+    for (let q = 0; q < 6; q++) ac.setXYZ(o + q, col[0], col[1], col[2]);
+  });
+  ap.needsUpdate = true; ac.needsUpdate = true;
+  // よどみ点（循環が実際の Cl と一致する付着流の迎角で求める）
+  const av = sec.alpha0 + Math.asin(clamp(lk.cl / sec.K, -1, 1));
+  const sp = aircraft.panel.stagnationPoint(aircraft.panel.gamma(av));
+  SEC.stag.position.set(sp.x, sp.y, 0.08);
+}
+
+/* ---------------------------------------------------------------------
+ * 12. 煙パルス：同時に放出した粒子列を「厳密な」パネル法の速度で追跡（CPU・RK4）
+ *     → 上面を通る粒子が先に後縁へ着く ＝ 等時間通過説は誤り
+ * ------------------------------------------------------------------- */
+const SMOKE = { NT: 26, DY: 0.028, X0: -0.75 };
+const smokeGroup = new THREE.Group(); secFoil.add(smokeGroup);
+const smokePts = new THREE.Points(new THREE.BufferGeometry(), new THREE.ShaderMaterial({
+  uniforms: { uSize: { value: 7 * Math.min(devicePixelRatio, 2) } },
+  vertexShader: /* glsl */ `uniform float uSize; attribute float aSel; varying float vSel;
+    void main(){ vSel = aSel; gl_PointSize = uSize * (1.0 + 0.8 * step(0.5, aSel)); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */ `varying float vSel;
+    void main(){ vec2 c = gl_PointCoord - 0.5; float r = length(c); if (r > 0.5) discard;
+      vec3 col = vSel > 1.5 ? vec3(1.0, 0.54, 0.85) : vSel > 0.5 ? vec3(1.0, 0.88, 0.4) : vec3(1.0);
+      gl_FragColor = vec4(col, smoothstep(0.5, 0.3, r)); }`,
+  transparent: true, depthTest: false,
+}));
+smokePts.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(SMOKE.NT * 3), 3));
+smokePts.geometry.setAttribute('aSel', new THREE.BufferAttribute(new Float32Array(SMOKE.NT), 1));
+smokePts.frustumCulled = false; smokePts.renderOrder = 50;
+const smokeLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, depthTest: false }));
+smokeLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(SMOKE.NT * 3), 3));
+smokeLine.frustumCulled = false; smokeLine.renderOrder = 49;
+const pathMax = 3000;
+const mkPath = (c) => {
+  const l = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: c, transparent: true, opacity: 0.8, depthTest: false }));
+  l.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pathMax * 3), 3));
+  l.geometry.setDrawRange(0, 0); l.frustumCulled = false; l.renderOrder = 48;
+  return l;
+};
+const smokePathUp = mkPath(0xffe066), smokePathLo = mkPath(0xff8ad8);
+const teMark = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(1, -0.2, 0.09), new THREE.Vector3(1, 0.2, 0.09)]),
+  new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.015, gapSize: 0.012, transparent: true, opacity: 0.6 }));
+teMark.computeLineDistances();
+smokeGroup.add(smokeLine, smokePts, smokePathUp, smokePathLo, teMark);
+
+class SmokePulse {
+  constructor() { this.tr = []; this.phase = 'wait'; this.timer = 0.4; this.last = null; this.v = [0, 0]; this.a = 0; }
+  reset() { this.phase = 'wait'; this.timer = 0.3; this.tr = []; this.draw(); }
+  vel(x, y, out) { return aircraft.panel.velocityAt(x, y, this.g, this.a, out); }
+  release() {
+    const pn = aircraft.panel, foil = aircraft.foil;
+    this.a = secState.a; this.dG = secState.dG; this.g = pn.gamma(this.a, this.dG);
+    this.foil = foil; this.version = aircraft.version;
+    const ca = Math.cos(this.a), sa = Math.sin(this.a), v = this.v;
+    // 分岐流線（よどみ点に届く流線）を上流へ逆にたどる
+    const sp = pn.stagnationPoint(this.g), j = sp.j;
+    let x = sp.x - pn.st[j] * 0.004, y = sp.y + pn.ct[j] * 0.004;
+    for (let i = 0; i < 4000; i++) {
+      this.vel(x, y, v); let m = Math.hypot(v[0], v[1]); if (m < 1e-9) break;
+      const xm = x - 0.004 * v[0] / m, ym = y - 0.004 * v[1] / m;
+      this.vel(xm, ym, v); m = Math.hypot(v[0], v[1]) || 1;
+      x -= 0.008 * v[0] / m; y -= 0.008 * v[1] / m;
+      if (x * ca + y * sa <= SMOKE.X0) break;
+    }
+    const ydiv = -x * sa + y * ca;
+    this.tr = [];
+    for (let k = 0; k < SMOKE.NT; k++) {
+      const off = (k - SMOKE.NT / 2 + 0.5) * SMOKE.DY, yw = ydiv + off, xw = SMOKE.X0;
+      this.tr.push({ x: xw * ca - yw * sa, y: xw * sa + yw * ca, off, t: null, side: 0, alive: true });
+    }
+    this.iUp = SMOKE.NT / 2 + 1; this.iLo = SMOKE.NT / 2 - 2;      // 分岐流線の上下 1.5 本目
+    this.pathUp = []; this.pathLo = [];
+    this.tau = 0; this.phase = 'run';
+  }
+  step(dtVis) {
+    if (this.phase !== 'run' && (this.version !== aircraft.version)) this.tr = [];
+    if (this.phase === 'wait') { this.timer -= dtVis; if (this.timer <= 0) this.release(); return; }
+    if (this.phase === 'hold') { this.timer -= dtVis; if (this.timer <= 0) { this.phase = 'wait'; this.timer = 0.3; } return; }
+    if (this.version !== aircraft.version || Math.abs(secState.a - this.a) > 0.5 * DEG) { this.reset(); return; }
+    const dtau = dtVis * U2D, v = this.v, k1 = [0, 0], k2 = [0, 0], k3 = [0, 0], k4 = [0, 0];
+    this.tr.forEach((p, idx) => {
+      if (!p.alive) return;
+      let rem = dtau, n = 0;
+      while (rem > 1e-9 && n++ < 40) {
+        this.vel(p.x, p.y, k1);
+        const h = Math.min(rem, 0.006 / Math.max(Math.hypot(k1[0], k1[1]), 0.15));
+        this.vel(p.x + 0.5 * h * k1[0], p.y + 0.5 * h * k1[1], k2);
+        this.vel(p.x + 0.5 * h * k2[0], p.y + 0.5 * h * k2[1], k3);
+        this.vel(p.x + h * k3[0], p.y + h * k3[1], k4);
+        const nx = p.x + (h / 6) * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]), ny = p.y + (h / 6) * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]);
+        if (p.t === null && p.x < 1 && nx >= 1) {            // 後縁 (x=1) を通過した時刻
+          const f = (1 - p.x) / (nx - p.x);
+          p.t = this.tau + (dtau - rem) + f * h; p.side = p.y + f * (ny - p.y) >= 0 ? 1 : -1;
+        }
+        p.x = nx; p.y = ny; rem -= h;
+        if (nx > 0 && nx < 1 && ny < this.foil.upperY(nx) && ny > this.foil.lowerY(nx)) { p.alive = false; break; }
+      }
+      if (idx === this.iUp && this.pathUp.length < pathMax) this.pathUp.push(p.x, p.y);
+      if (idx === this.iLo && this.pathLo.length < pathMax) this.pathLo.push(p.x, p.y);
+    });
+    this.tau += dtau;
+    const up = this.tr[this.iUp], lo = this.tr[this.iLo];
+    if (up.t !== null && lo.t !== null && !this._stored) {
+      this.last = { tUp: up.t, tLo: lo.t, x0: SMOKE.X0 };
+      this._stored = true;
+    }
+    if ((up.t !== null && lo.t !== null && this.tau > Math.max(up.t, lo.t) + 1.2) || this.tau > 8) {
+      this.phase = 'hold'; this.timer = 2.2; this._stored = false;
+    }
+  }
+  draw() {
+    const pp = smokePts.geometry.attributes.position, sel = smokePts.geometry.attributes.aSel, lp = smokeLine.geometry.attributes.position;
+    let n = 0;
+    this.tr.forEach((p, i) => {
+      if (!p.alive) return;
+      pp.setXYZ(n, p.x, p.y, 0.09); lp.setXYZ(n, p.x, p.y, 0.09);
+      sel.setX(n, i === this.iUp ? 1 : i === this.iLo ? 2 : 0); n++;
+    });
+    smokePts.geometry.setDrawRange(0, n); smokeLine.geometry.setDrawRange(0, n);
+    pp.needsUpdate = lp.needsUpdate = sel.needsUpdate = true;
+    for (const [line, arr] of [[smokePathUp, this.pathUp || []], [smokePathLo, this.pathLo || []]]) {
+      const a = line.geometry.attributes.position, m = Math.min(arr.length / 2, pathMax);
+      for (let i = 0; i < m; i++) a.setXYZ(i, arr[2 * i], arr[2 * i + 1], 0.085);
+      a.needsUpdate = true; line.geometry.setDrawRange(0, m);
+    }
+  }
+}
+const smoke = new SmokePulse();
+
+/* ---------------------------------------------------------------------
+ * 13. グラフ（Chart.js）：Cp 分布 / Cl–α / 極曲線
+ * ------------------------------------------------------------------- */
+Chart.defaults.color = '#97a8be';
+Chart.defaults.font.family = getComputedStyle(document.documentElement).fontFamily;
+Chart.defaults.font.size = 10.5;
+const GRID = 'rgba(255,255,255,0.07)';
+const dsLine = (label, color, o = {}) => ({ label, data: [], borderColor: color, backgroundColor: color, showLine: true, pointRadius: 0, borderWidth: 1.7, ...o });
+const dsMark = (label, color) => ({ label, data: [], borderColor: color, backgroundColor: color, pointBorderColor: '#fff', showLine: false, pointRadius: 5, pointHoverRadius: 6, borderWidth: 1.5 });
+function mkChart(id, xTitle, yTitle, datasets, sx = {}, sy = {}) {
+  return new Chart($(id), {
+    type: 'scatter', data: { datasets },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,   // 極曲線は x が単調でないので parsing は既定（true）のまま
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { position: 'top', align: 'end', labels: { boxWidth: 12, boxHeight: 2, padding: 6, font: { size: 10 } } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: (${c.parsed.x.toFixed(3)}, ${c.parsed.y.toFixed(3)})` } },
+      },
+      scales: {
+        x: { type: 'linear', title: { display: true, text: xTitle }, grid: { color: GRID }, ...sx },
+        y: { type: 'linear', title: { display: true, text: yTitle }, grid: { color: GRID }, ...sy },
+      },
+    },
+  });
+}
+const charts = {
+  cp: mkChart('chartCp', 'x/c（前縁 0 → 後縁 1）', 'Cp（上ほど負圧）',
+    [dsLine('上面', '#5cb8ff'), dsLine('下面', '#ff8a5c')], { min: 0, max: 1 }, { reverse: true }),
+  cla: mkChart('chartCla', '迎角 α [°]', '揚力係数 Cl, CL', [
+    dsLine('薄翼理論 2π', 'rgba(255,255,255,0.35)', { borderDash: [2, 3], borderWidth: 1 }),
+    dsLine('パネル法（非粘性）', '#8aa0b8', { borderDash: [5, 4], borderWidth: 1.2 }),
+    dsLine('2D 断面（失速モデル）', '#5cc8ff'),
+    dsLine('3D 主翼（揚力線）', '#ffc542'),
+    dsMark('現在 2D', '#5cc8ff'), dsMark('現在 3D', '#ffc542'),
+  ], { min: -10, max: 25 }, { min: -1, max: 2.2 }),
+  polar: mkChart('chartPolar', '抗力係数 Cd, CD', '揚力係数 Cl, CL', [
+    dsLine('2D 断面', '#5cc8ff'), dsLine('主翼（+誘導抗力）', '#ffc542'), dsLine('全機（+有害抗力）', '#ff7a45'),
+    dsLine('L/D 最大の接線', 'rgba(255,255,255,0.45)', { borderDash: [4, 4], borderWidth: 1 }),
+    dsMark('現在（全機）', '#ff7a45'),
+  ], { min: 0, max: 0.25 }, { min: -0.6, max: 2.0 }),
+};
+let chartTab = 'cp', chartRe = 0, chartVersion = -1, chartTimer = 0;
+function rebuildStaticCharts(Re) {
+  const sec = aircraft.section, pn = aircraft.panel, wing = aircraft.wing, ac = aircraft;
+  const thin = [], inv = [], two = [], three = [], pSec = [], pWing = [], pAc = [];
+  const cdm = sec.cdMin(Re), aL0thin = sec.alpha0;
+  for (let ad = -10; ad <= 25.001; ad += 0.25) {
+    const a = ad * DEG, lk = sec.lookup(a, {}), w = wing.coeffs(a, {});
+    thin.push({ x: ad, y: 2 * Math.PI * (a - aL0thin) });
+    inv.push({ x: ad, y: pn.clInviscid(a) });
+    two.push({ x: ad, y: lk.cl });
+    three.push({ x: ad, y: w.CL });
+    if (ad >= -8 && ad <= 24) {
+      pSec.push({ x: cdm + lk.cdv, y: lk.cl });
+      pWing.push({ x: cdm + w.CDpv + w.CDi, y: w.CL });
+      pAc.push({ x: cdm + w.CDpv + w.CDi + ac.CD0body, y: w.CL });
+    }
+  }
+  const c = charts.cla.data.datasets;
+  c[0].data = thin; c[1].data = inv; c[2].data = two; c[3].data = three;
+  const best = ac.bestLD(Re), pd = charts.polar.data.datasets;
+  pd[0].data = pSec; pd[1].data = pWing; pd[2].data = pAc;
+  pd[3].data = [{ x: 0, y: 0 }, { x: best.CD * 1.6, y: best.CL * 1.6 }];
+  pd[3].label = `L/D 最大 ${best.LD.toFixed(1)}（α=${(best.alpha / DEG).toFixed(1)}°）`;
+  chartRe = Re; chartVersion = aircraft.version;
+  charts.cla.update('none'); charts.polar.update('none');
+}
+function updateCharts() {
+  const Re = S.aero.Re || 3e6;
+  if (chartVersion !== aircraft.version || Math.abs(Re / (chartRe || 1) - 1) > 0.15) rebuildStaticCharts(Re);
+  if (chartTab === 'cp') {
+    const foil = aircraft.foil, cp = SEC.cp, up = [], lo = [];
+    if (!cp) return;
+    let mn = 0;
+    for (let j = foil.leIndex; j < cp.length; j++) up.push({ x: foil.x[j], y: cp[j] });     // 上面：前縁 → 後縁
+    for (let j = foil.leIndex; j >= 0; j--) lo.push({ x: foil.x[j], y: cp[j] });            // 下面：前縁 → 後縁
+    for (let j = 0; j < cp.length; j++) mn = Math.min(mn, cp[j]);
+    const d = charts.cp.data.datasets; d[0].data = up; d[1].data = lo;
+    charts.cp.options.scales.y.min = Math.min(-1.5, Math.floor(mn * 2) / 2);
+    charts.cp.options.scales.y.max = 1.2;
+    charts.cp.update('none');
+    $('chartNote').innerHTML = `断面の迎角 ${fmt(secState.a / DEG, 1)}°（${P.secAlphaMode === 'eff' ? '3D 翼中央の有効迎角' : '幾何迎角'}）・Cl = ${fmt(secState.cl, 3)}`
+      + (secState.f < 0.985 ? ' ・<span style="color:#ffb3b3">失速：はく離域の Cp は経験的な模式表示</span>' : ' ・上下の Cp の差の面積 ≈ Cl');
+  } else if (chartTab === 'cla') {
+    const d = charts.cla.data.datasets;
+    d[4].data = [{ x: secState.a / DEG, y: secState.cl }];
+    d[5].data = [{ x: S.alpha / DEG, y: S.aero.CL }];
+    charts.cla.update('none');
+    $('chartNote').innerHTML = `2D 揚力傾斜 ${fmt(aircraft.panel.Cl90, 2)}/rad（= ${fmt(aircraft.panel.Cl90 / (2 * Math.PI), 3)}×2π）・3D 主翼は吹き下ろしで傾きが小さい（AR = ${P.AR}）`;
+  } else {
+    const d = charts.polar.data.datasets;
+    d[4].data = [{ x: S.aero.CD, y: S.aero.CL }];
+    charts.polar.update('none');
+    $('chartNote').innerHTML = `Re = ${(S.aero.Re / 1e6).toFixed(2)}×10⁶ ・原点からの接線の点で L/D 最大（最良滑空）`;
+  }
+}
+
+/* ---------------------------------------------------------------------
+ * 14. HUD・情報パネル・ラベル
+ * ------------------------------------------------------------------- */
+const labelMap = new Map(), labelUsed = new Set(), _pv = new THREE.Vector3();
+const ANCHOR = { top: 'translate(-50%, -118%)', bottom: 'translate(-50%, 18%)', left: 'translate(-106%, -50%)', right: 'translate(6%, -50%)' };
+function label(key, pos, cam, html, cls = '', anchor = 'top') {
+  let el = labelMap.get(key);
+  if (!el) { el = document.createElement('div'); el.className = 'flabel ' + cls; $('labels').appendChild(el); labelMap.set(key, el); }
+  _pv.copy(pos).project(cam);
+  labelUsed.add(key);
+  if (_pv.z > 1 || _pv.z < -1 || Math.abs(_pv.x) > 1.2 || Math.abs(_pv.y) > 1.2) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.style.transform = `translate(${((_pv.x * 0.5 + 0.5) * innerWidth).toFixed(1)}px, ${((-_pv.y * 0.5 + 0.5) * innerHeight).toFixed(1)}px) ${ANCHOR[anchor]}`;
+  if (el._h !== html) { el.innerHTML = html; el._h = html; }
+}
+function flushLabels() {
+  for (const [k, el] of labelMap) if (!labelUsed.has(k)) el.style.display = 'none';
+  labelUsed.clear();
+}
+
+/** 重なり合う UI の位置を CSS 変数で調整（画面サイズによって上部バーや HUD の高さが変わるため） */
+function layoutVars() {
+  const R = document.documentElement.style;
+  const v = { '--tb': $('topbar').getBoundingClientRect().bottom + 6, '--hb': $('hud').getBoundingClientRect().bottom + 8, '--cb': $('charts').offsetHeight };
+  for (const [k, x] of Object.entries(v)) { const px = `${Math.round(x)}px`; if (R.getPropertyValue(k) !== px) R.setProperty(k, px); }
+}
+function sinkRate() { return P.mode === 'tunnel' ? 0 : -sim.s[3]; }
+function updateHUD() {
+  const LD = S.D > 1e-6 ? S.L / S.D : NaN, sink = sinkRate();
+  $('hL').innerHTML = fmtN(S.L); $('hD').innerHTML = fmtN(S.D);
+  $('hLD').textContent = fmt(LD, 1);
+  $('hA').innerHTML = `${fmt(S.alpha / DEG, 1)}<small>°</small>`;
+  $('hV').innerHTML = `${fmt(S.V, 1)}<small>m/s</small>`;
+  $('hS').innerHTML = P.mode === 'tunnel' ? '–<small>風洞</small>' : sink >= 0 ? `${fmt(sink, 2)}<small>m/s</small>` : `${fmt(sink, 2)}<small>上昇</small>`;
+  const a = S.aero, rows = [
+    ['経路角 γ', `${fmt(S.gamma / DEG, 1)}°`],
+    ['高度（対地）', P.mode === 'tunnel' ? '–' : `${fmt(sim.s[1], 0)} m`],
+    ['空気密度 ρ', `${fmt(S.atm.rho, 3)} kg/m³`],
+    ['CL / CD', `${fmt(a.CL, 3)} / ${fmt(a.CD, 4)}`],
+    ['CD = 形状+誘導+有害', `${fmt(a.CDp, 4)}+${fmt(a.CDi, 4)}+${fmt(a.CD0, 3)}`],
+    ['スパン効率 e / αi', `${fmt(a.e, 3)} / ${fmt(a.aiRoot / DEG, 2)}°`],
+    ['推力 T / 重量 W', `${fmtKN(S.T)} / ${fmtKN(S.W)}`],
+    ['レイノルズ数', `${fmt(a.Re / 1e6, 2)}×10⁶`],
+  ];
+  $('hSub').innerHTML = rows.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join('');
+  let st = '', warn = false;
+  if (P.mode === 'tunnel') st = '風洞：機体は固定。風速 V の風を当てています';
+  else if (P.mode === 'powered') st = S.onGround ? `地上滑走中：L/W = ${fmt(S.L / S.W, 2)}（1 を超えると浮上）` : `飛行中：${S.gamma > 0.005 ? '上昇' : S.gamma < -0.005 ? '降下' : '水平'}（γ = ${fmt(S.gamma / DEG, 1)}°）`;
+  else st = `滑空中：推力ゼロ・滑空比 ${fmt(LD, 1)}`;
+  if (a.fMin < 0.7 && a.stallFrac > 0.02) { st = `⚠ 失速：翼幅の ${fmt(a.stallFrac * 100, 0)}% で流れがはく離`; warn = true; }
+  $('hState').textContent = st; $('hState').classList.toggle('warn', warn);
+  INFO.rho = `${fmt(S.atm.rho, 3)} kg/m³`;
+  layoutVars();
+  INFO.wing = `b=${fmt(aircraft.wing.b, 1)} m, c̄=${fmt(aircraft.wing.mac, 2)} m`;
+}
+
+function infoHTML() {
+  const a = S.aero, LD = S.L / Math.max(S.D, 1e-9);
+  if (P.view === 'sec') {
+    const r = smoke.last, cBar = aircraft.wing.mac, Vv = Math.max(S.V, 1);
+    const head = `<h3>翼断面（2次元翼）α = ${fmt(secState.a / DEG, 1)}° ・ Cl = ${fmt(secState.cl, 3)} ・ Cd = ${fmt(secState.cd, 4)}</h3>`;
+    if (!LAYERS.smoke) return head + '<span class="kv">流線の色：青いほど速い（圧力が低い）、赤いほど遅い（圧力が高い）</span>';
+    if (!r) return head + '<span class="kv">煙パルスを放出中…　同時に放出した白い点列が翼を通り過ぎる様子を見てください。</span>';
+    const d = r.tLo - r.tUp;
+    return head + `<span class="kv">煙パルスの後縁到着（無次元時間 τ = tV/c）：<span class="hl-up">上面側 ${fmt(r.tUp, 2)}</span> ／ <span class="hl-lo">下面側 ${fmt(r.tLo, 2)}</span></span>`
+      + `<span class="kv">上面が <b>${fmt(d, 2)}</b> 早く到着（実機 V=${fmt(Vv, 0)} m/s, c=${fmt(cBar, 2)} m なら ${fmt((d * cBar / Vv) * 1000, 1)} ms）</span>`
+      + `<div style="color:#ffd27a;font-size:12px">同時に出発した空気は後縁で「再会しない」→ 等時間通過説は誤り。上面の流れは速く、下面は自由流より遅れます。</div>`;
+  }
+  if (P.mode === 'powered') {
+    const along = S.T - S.D - S.W * Math.sin(S.gamma) - (S.onGround ? -S.Ff : 0);
+    const acc = along / aircraft.mass, LW = S.L / S.W;
+    const on = [S.T > 1, acc > 0.02 || !S.onGround, S.V > 0.5, S.L > 1, LW >= 1 || !S.onGround];
+    const c = (i, t, v) => `<div class="c ${on[i] ? 'on' : ''}"><b>${t}</b>${v}</div>`;
+    return `<h3>(A) 動力飛行：推力 → 速度 → 揚力 の因果関係</h3><div class="chain">`
+      + c(0, '① 推力', `T = ${fmtKN(S.T)}`) + '<span class="arr">→</span>'
+      + c(1, '② 加速 (T > D)', `D = ${fmtKN(S.D)}<br>a = ${fmt(acc, 2)} m/s²`) + '<span class="arr">→</span>'
+      + c(2, '③ 速度', `V = ${fmt(S.V, 1)} m/s`) + '<span class="arr">→</span>'
+      + c(3, '④ 揚力 ½ρV²SC<sub>L</sub>', `L = ${fmtKN(S.L)}`) + '<span class="arr">→</span>'
+      + c(4, '⑤ L > W で浮上', `L/W = ${fmt(LW, 2)}`)
+      + `</div><div class="bar"><i style="width:${clamp(LW, 0, 1) * 100}%"></i></div>`;
+  }
+  if (P.mode === 'glide') {
+    const g = -S.gamma, Wsin = S.W * Math.sin(g);
+    return `<h3>(B) 滑空：推力ゼロ。重力の進行方向成分が速度を保つ</h3>`
+      + `<span class="kv"><em>滑空比</em> L/D = <b>${fmt(LD, 1)}</b>（1 m 降りる間に ${fmt(LD, 1)} m 進む）</span>`
+      + `<span class="kv"><em>滑空角</em> γ = ${fmt(g / DEG, 2)}° = atan(D/L)</span>`
+      + `<span class="kv"><em>沈下率</em> V·sinγ = <b>${fmt(sinkRate(), 2)} m/s</b></span><br>`
+      + `<span class="kv"><em>W·sinγ</em> = ${fmtKN(Wsin)} ⇔ <em>抗力 D</em> = ${fmtKN(S.D)}</span>`
+      + `<span class="kv"><em>W·cosγ</em> = ${fmtKN(S.W * Math.cos(g))} ⇔ <em>揚力 L</em> = ${fmtKN(S.L)}</span>`;
+  }
+  const w = aircraft.wing, rho = S.atm.rho, V = S.V, mdot = rho * V * Math.PI * w.b * w.b / 4, wInf = 2 * V * a.CL / (Math.PI * w.AR);
+  return `<h3>ニュートンの第3法則で見る揚力（翼は空気を下へ押し、反作用で押し上げられる）</h3>`
+    + `<span class="kv"><em>翼幅を直径とする円を通る空気</em> ṁ = ρV·πb²/4 = <b>${fmt(mdot, 0)} kg/s</b></span>`
+    + `<span class="kv"><em>遠方で与える下向き速度</em> w = 2V·C<sub>L</sub>/(πAR) = <b>${fmt(wInf, 2)} m/s</b></span><br>`
+    + `<span class="kv"><em>毎秒の下向き運動量</em> ṁ·w = <b>${fmtKN(mdot * wInf)}</b> ＝ 揚力 L = <b>${fmtKN(S.L)}</b>（楕円翼の運動量理論）</span>`
+    + `<span class="kv"><em>誘導抗力</em> D<sub>i</sub> = ${fmtKN(a.q * aircraft.S * a.CDi)}</span>`;
+}
+
+/* ---------------------------------------------------------------------
+ * 15. 操作：モード・ビュー・再構成
+ * ------------------------------------------------------------------- */
+function toast(msg, ms = 2200) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), ms);
+}
+function setMode(m) {
+  P.mode = m;
+  sim.alphaCmd = P.alpha * DEG; sim.thrust = P.thrust; sim.hRef = P.altitude;
+  if (m === 'tunnel') { if (P.V < 5) P.V = 40; sim.setTunnel(P.alpha * DEG, P.V); }
+  else if (m === 'powered') sim.resetPowered();
+  else {
+    const tr = sim.resetGlide(GLIDE_Z0);
+    if (!tr.ok) toast('この迎角では揚力が小さすぎて滑空できません（迎角を上げてください）');
+  }
+  physAcc = 0;
+  S = sim.evaluate(sim.s, S);
+  if (m !== 'tunnel') P.V = Math.round(S.V * 2) / 2;
+  syncUI();
+}
+function setView(v) {
+  P.view = v;
+  ctl3D.enabled = v === '3d'; ctlSec.enabled = v === 'sec';
+  if (v === 'sec') smoke.reset();
+  syncUI();
+}
+function reconfigure() {
+  try {
+    aircraft.configure({ naca: P.naca, AR: P.AR, planform: P.planform });
+  } catch (e) { toast(String(e.message || e)); return; }
+  buildWing(); bakeField(); buildSection();
+  for (const k of ['p3', 'p2']) if (PARTS[k]) { PARTS[k].refreshField(); PARTS[k].needsInit = true; }
+  lastAeroKey = NaN; smoke.reset();
+  if (P.mode === 'glide' && sim.s[1] > 5) { /* 飛行を続ける（空力だけが変わる） */ }
+}
+function onNaca(v) {
+  const code = String(v).trim();
+  if (!NacaAirfoil.parse(code)) { toast('NACA 4桁の番号を入力してください（例：2412, 0012, 4415）'); P.naca = aircraft.foil.code; ctl.naca.updateDisplay(); return; }
+  P.naca = code; reconfigure();
+}
+
+const ctl = {};
+const ACTIONS = {
+  reset: () => setMode(P.mode),
+  bestLD: () => {
+    const b = aircraft.bestLD(S.aero.Re || 3e6);
+    P.alpha = Math.round((b.alpha / DEG) * 10) / 10; onAlpha(); ctl.alpha.updateDisplay();
+    toast(`L/D 最大の迎角 ${P.alpha}°（L/D = ${b.LD.toFixed(1)}）`);
+  },
+  stepFrame: () => { P.paused = true; stepOnce = 1 / 30; },
+  tour: () => startTour(0),
+  tests: () => { $('testPanel').hidden = false; },
+};
+let stepOnce = 0;
+function onAlpha() { sim.alphaCmd = P.alpha * DEG; if (P.mode === 'tunnel') sim.setTunnel(P.alpha * DEG, P.V); }
+function onV() { if (P.mode === 'tunnel') sim.setTunnel(P.alpha * DEG, P.V); else sim.setAirspeed(P.V); }
+
+const gui = new GUI({ container: $('gui-wrap'), title: '操作パネル', width: 272 });
+{
+  const f1 = gui.addFolder('飛行条件');
+  ctl.mode = f1.add(P, 'mode', { '風洞（機体固定）': 'tunnel', '(A) 動力飛行・離陸': 'powered', '(B) 滑空': 'glide' }).name('モード').onChange(setMode);
+  ctl.alpha = f1.add(P, 'alpha', -8, 20, 0.1).name('迎角 α [°]').onChange(onAlpha);
+  ctl.V = f1.add(P, 'V', 0, 90, 0.5).name('対気速度 V [m/s]').onChange(onV);
+  ctl.thrust = f1.add(P, 'thrust', 0, 5000, 50).name('推力 T₀ [N]').onChange((v) => { sim.thrust = v; });
+  ctl.alt = f1.add(P, 'altitude', 0, 10000, 100).name('高度 [m]').onChange((v) => { sim.hRef = v; });
+  f1.add(INFO, 'rho').name('→ 空気密度 ρ').disable().listen();
+  f1.add(ACTIONS, 'reset').name('↺ リセット（初期状態へ）');
+  f1.add(ACTIONS, 'bestLD').name('L/D 最大の迎角にする');
+  const f2 = gui.addFolder('翼');
+  ctl.naca = f2.add(P, 'naca').name('翼型 NACA 4桁').onFinishChange(onNaca);
+  f2.add(P, 'nacaPreset', ['0006', '0012', '0018', '2412', '2415', '4412', '4415', '6409']).name('翼型プリセット')
+    .onChange((v) => { P.naca = v; ctl.naca.updateDisplay(); reconfigure(); });
+  f2.add(P, 'AR', 3, 20, 0.5).name('アスペクト比 AR').onFinishChange(reconfigure);
+  f2.add(P, 'planform', { 矩形: 'rect', 'テーパー（λ=0.45）': 'taper', 楕円: 'ellipse' }).name('平面形').onChange(reconfigure);
+  f2.add(INFO, 'wing').name('→ 翼幅・平均翼弦').disable().listen();
+  const f3 = gui.addFolder('表示');
+  f3.add(P, 'view', { '3D 全機': '3d', '翼断面 2D': 'sec' }).name('ビュー').onChange(setView).listen();
+  f3.add(P, 'secAlphaMode', { '幾何迎角（2次元翼）': 'geo', '3D 翼中央の有効迎角': 'eff' }).name('断面の迎角').onChange(() => { lastSecKey = NaN; smoke.reset(); });
+  f3.add(LAYERS, 'cp').name('翼面の Cp 色').onChange(() => { WING.gray = false; lastAeroKey = NaN; });
+  f3.add(LAYERS, 'particles').name('流線（GPU 粒子）');
+  f3.add(LAYERS, 'vortex').name('翼端渦');
+  f3.add(LAYERS, 'downwash').name('吹き下ろし矢印');
+  f3.add(LAYERS, 'gamma').name('循環（揚力）分布 Γ(y)');
+  f3.add(LAYERS, 'forces').name('4つの力の矢印');
+  f3.add(LAYERS, 'smoke').name('煙パルス（2D）').onChange(() => smoke.reset());
+  f3.add(LAYERS, 'pArrows').name('圧力矢印（2D）');
+  f3.add(LAYERS, 'env').name('地面・雲');
+  f3.add(LAYERS, 'charts').name('グラフ').onChange((v) => { $('charts').style.display = v ? '' : 'none'; });
+  f3.add(P, 'colorMode', { 'Cp（ベルヌーイ換算）': 'cp', '速さ V/V∞': 'speed' }).name('粒子の色');
+  f3.add(P, 'quality', { 自動: 'auto', '低（2k）': 0, '中（8k）': 2, '高（16k）': 3, '最高（32k）': 4 }).name('粒子数')
+    .onChange((v) => { if (v !== 'auto') setTier(+v); });
+  const f4 = gui.addFolder('再生');
+  f4.add(P, 'paused').name('一時停止').listen();
+  f4.add(P, 'timeScale', 0.05, 2, 0.05).name('再生速度（スロー）').listen();
+  f4.add(ACTIONS, 'stepFrame').name('コマ送り（1/30 秒）');
+  const f5 = gui.addFolder('教材');
+  f5.add(ACTIONS, 'tour').name('▶ ステップ解説を始める');
+  f5.add(ACTIONS, 'tests').name('セルフテスト結果を見る');
+  f3.close(); f4.close();
+  if (isMobile || innerWidth < 900) gui.close();
+}
+function syncUI() {
+  for (const b of document.querySelectorAll('#viewSeg button')) b.classList.toggle('on', b.dataset.view === P.view);
+  for (const b of document.querySelectorAll('#modeSeg button')) b.classList.toggle('on', b.dataset.mode === P.mode);
+  ctl.thrust.disable(P.mode === 'glide');
+  ctl.V.name(P.mode === 'tunnel' ? '対気速度 V [m/s]' : '対気速度 V [m/s]（与える）');
+  ctl.alpha.name(P.mode === 'tunnel' ? '迎角 α [°]' : '迎角 α [°]（エレベーター）');
+  for (const c of gui.controllersRecursive()) c.updateDisplay();
+  $('legend').style.display = LAYERS.cp || LAYERS.particles ? '' : 'none';
+}
+document.querySelectorAll('#viewSeg button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+document.querySelectorAll('#modeSeg button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+document.querySelectorAll('#charts .tabs button[data-chart]').forEach((b) => b.addEventListener('click', () => {
+  chartTab = b.dataset.chart;
+  document.querySelectorAll('#charts [data-chart]').forEach((e) => e.classList.toggle('on', e.dataset.chart === chartTab));
+  $('charts').classList.remove('collapsed'); updateCharts();
+}));
+$('chartsToggle').addEventListener('click', () => { $('charts').classList.toggle('collapsed'); $('chartsToggle').textContent = $('charts').classList.contains('collapsed') ? '▴' : '▾'; layoutVars(); });
+if (innerWidth < 900 || innerHeight < 620) { $('charts').classList.add('collapsed'); $('chartsToggle').textContent = '▴'; }
+$('guiToggle').addEventListener('click', () => $('gui-wrap').classList.toggle('open'));
+$('btnTour').addEventListener('click', () => startTour(0));
+$('btnTest').addEventListener('click', () => { $('testPanel').hidden = false; });
+$('testClose').addEventListener('click', () => { $('testPanel').hidden = true; });
+addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { P.paused = !P.paused; e.preventDefault(); }
+  if (e.key === 'ArrowRight' && TOUR.active) tourGo(TOUR.i + 1);
+  if (e.key === 'ArrowLeft' && TOUR.active) tourGo(TOUR.i - 1);
+});
+
+/* ---------------------------------------------------------------------
+ * 16. カメラの移動（ステップ解説用）
+ * ------------------------------------------------------------------- */
+const CAMS = {
+  hero: { pos: [-13, 6, 15], tgt: [0.5, -0.3, 0] },
+  rear: { pos: [24, 4, 15], tgt: [7, -0.8, 0] },
+  side: { pos: [0, 1.5, 27], tgt: [0, -0.2, 0] },
+  chase: { pos: [11, 4.5, 21], tgt: [-1, -0.2, 0] },
+};
+const tween = { t: 1 };
+function flyTo(name, dur = 1.6) {
+  const c = CAMS[name], k = Math.max(1, aircraft.wing.b / 11);
+  tween.cam = cam3D; tween.ctl = ctl3D; tween.t = 0; tween.dur = dur;
+  tween.p0 = cam3D.position.clone(); tween.t0 = ctl3D.target.clone();
+  tween.p1 = new THREE.Vector3(...c.pos).multiplyScalar(k); tween.t1 = new THREE.Vector3(...c.tgt).multiplyScalar(k);
+}
+function flySec(dur = 1.2) {
+  tween.cam = camSec; tween.ctl = ctlSec; tween.t = 0; tween.dur = dur;
+  tween.p0 = camSec.position.clone(); tween.t0 = ctlSec.target.clone(); tween.z0 = camSec.zoom;
+  tween.p1 = new THREE.Vector3(0.6, 0.05, 5); tween.t1 = new THREE.Vector3(0.6, 0.05, 0); tween.z1 = 1;
+}
+function updateTween(dt) {
+  if (tween.t >= 1) return;
+  tween.t = Math.min(1, tween.t + dt / tween.dur);
+  const e = tween.t < 0.5 ? 2 * tween.t * tween.t : 1 - Math.pow(-2 * tween.t + 2, 2) / 2;
+  tween.cam.position.lerpVectors(tween.p0, tween.p1, e);
+  tween.ctl.target.lerpVectors(tween.t0, tween.t1, e);
+  if (tween.z0 !== undefined && tween.cam === camSec) { camSec.zoom = tween.z0 + (tween.z1 - tween.z0) * e; camSec.updateProjectionMatrix(); }
+}
+
+/* ---------------------------------------------------------------------
+ * 17. ステップ解説モード ①気流 → ②圧力差 → ③吹き下ろし → ④揚力 → ⑤滑空
+ * ------------------------------------------------------------------- */
+function setLayers(o) { Object.assign(LAYERS, o); WING.gray = false; lastAeroKey = NaN; syncUI(); }
+const STEPS = [
+  {
+    title: '① 気流：翼のまわりの空気の流れ',
+    enter() {
+      P.alpha = 6; P.V = 40; P.timeScale = 1; P.paused = false; P.secAlphaMode = 'geo';
+      setMode('tunnel'); setView('sec'); flySec();
+      setLayers({ particles: true, smoke: true, pArrows: false, cp: true });
+    },
+    body: () => `<p>風洞の中で、翼の断面（無限に長い翼の切り口）に左から風を当てています。粒子の色は流れの速さ：<b style="color:#6fb3ff">青いほど速い</b>、<b style="color:#ff9c5a">赤いほど遅い</b>。</p>
+      <p>白い点の列は、同じ瞬間に放出した<b>煙パルス</b>です。上面を回った煙（<span class="hl-up">黄</span>）は、下面の煙（<span class="hl-lo">桃</span>）よりずっと早く後縁に着きます。</p>
+      <p>「上下に分かれた空気は後縁で同時に出会う（<b>等時間通過説</b>）」は<b>誤り</b>です。そうなる物理的な理由はなく、実際は上面が先に着きます。</p>
+      <div class="live">${smoke.last ? `計測：上面 τ=${fmt(smoke.last.tUp, 2)}、下面 τ=${fmt(smoke.last.tLo, 2)} → 上面が <b>${fmt(smoke.last.tLo - smoke.last.tUp, 2)}</b> 早い` : '煙パルスが翼を通過するのを待っています…'}</div>`,
+  },
+  {
+    title: '② 圧力差：速い流れ ＝ 低い圧力',
+    enter() {
+      P.alpha = 6; setMode('tunnel'); setView('sec'); flySec();
+      setLayers({ particles: true, smoke: false, pArrows: true, cp: true });
+      selectChart('cp');
+    },
+    body: () => `<p>矢印が翼面の圧力です。上面は大気圧より低い<b style="color:#6fb3ff">負圧</b>で翼を吸い上げ、下面は<b style="color:#ff9c5a">正圧</b>で押し上げます。</p>
+      <p><b>ベルヌーイの定理</b> p + ½ρV² = 一定（1 本の流線に沿って）により、流れの速い上面ほど圧力が下がります。上下の圧力差を翼面全体で足し合わせたものが揚力です（左下の Cp 分布の囲む面積）。</p>
+      <p>上面が速くなるのは、鋭い後縁から流れが滑らかに離れる（<b>クッタ条件</b>）ために、翼のまわりに<b>循環</b>が生まれるからです。</p>
+      <div class="live">パネル法：Cl = ${fmt(secState.cl, 3)}（循環から）／ 迎角 ${fmt(secState.a / DEG, 1)}°</div>`,
+  },
+  {
+    title: '③ 吹き下ろし：空気を下へ押した反作用',
+    enter() {
+      P.alpha = 7; P.V = 40; setMode('tunnel'); setView('3d'); flyTo('rear', 2);
+      setLayers({ particles: true, vortex: true, downwash: true, gamma: true, forces: false, cp: true });
+    },
+    body: () => {
+      const a = S.aero, w = aircraft.wing, md = S.atm.rho * S.V * Math.PI * w.b * w.b / 4, wi = 2 * S.V * a.CL / (Math.PI * w.AR);
+      return `<p>翼は通り過ぎる空気を<b>下向きに曲げます</b>（吹き下ろし・水色の矢印）。<b>ニュートンの第3法則</b>：翼が空気を下へ押せば、空気は翼を上へ押し返します。これは①②の圧力差と<b>同じ現象の別の見方</b>です。</p>
+      <p>翼端では下面の高圧の空気が上面へ回り込み、<b>翼端渦</b>（白いらせん）ができます。吹き下ろしで翼の感じる迎角が α<sub>i</sub> だけ減り、揚力が後ろに傾いた分が<b>誘導抗力</b>になります。</p>
+      <div class="live">毎秒 ṁ ≈ ${fmt(md, 0)} kg の空気に w ≈ ${fmt(wi, 2)} m/s の下向き速度 → ṁ·w ≈ ${fmtKN(md * wi)}（揚力 L = ${fmtKN(S.L)}）</div>`;
+    },
+  },
+  {
+    title: '④ 揚力：推力 → 速度 → 揚力',
+    enter() {
+      P.alpha = 10; P.thrust = 3500; P.timeScale = 1; P.paused = false;
+      setMode('powered'); setView('3d'); flyTo('chase', 1.6);
+      setLayers({ particles: true, vortex: false, downwash: false, gamma: false, forces: true, env: true, cp: true });
+    },
+    body: () => `<p>(A) 動力飛行：滑走路で止まった状態から推力を出します。推力 T が抗力 D を上回ると機体は<b>加速</b>します（F = ma）。</p>
+      <p>速度 V が上がると揚力 <b>L = ½ρV²SC<sub>L</sub></b> は V² に比例して増え、L が重さ W を超えた瞬間に<b>浮上</b>します。推力は機体を直接持ち上げるのではなく、<b>速度を生み、その速度が揚力を生む</b>のです。</p>
+      <div class="live">V = ${fmt(S.V, 1)} m/s ・ L/W = ${fmt(S.L / S.W, 2)} ・ ${S.onGround ? '滑走中' : '浮上！'}（↺ リセットでやり直し）</div>`,
+  },
+  {
+    title: '⑤ 滑空：推力ゼロでも飛べる',
+    enter() {
+      const b = aircraft.bestLD(3e6);
+      P.alpha = Math.round((b.alpha / DEG) * 10) / 10; P.timeScale = 1; P.paused = false;
+      setMode('glide'); setView('3d'); flyTo('side', 1.6);
+      setLayers({ particles: true, vortex: false, downwash: false, gamma: false, forces: true, env: true, cp: true });
+    },
+    body: () => `<p>(B) 滑空：推力を 0 にしても、機体は<b>少し下向きに進む</b>ことで飛び続けます。重力の進行方向成分 <b>W·sinγ が抗力 D とつり合って</b>速度が保たれ、揚力 L が残りの W·cosγ を支えます。</p>
+      <p><b>滑空比</b> = 進む距離 ÷ 失う高度 = <b>L/D</b>。L/D が最大になる迎角（今は ${fmt(P.alpha, 1)}°）で最も遠くまで飛べます。<b>沈下率</b> = V·sinγ。</p>
+      <div class="live">L/D = ${fmt(S.L / S.D, 1)} ・ 沈下率 ${fmt(sinkRate(), 2)} m/s ・ W·sinγ = ${fmtKN(-S.W * Math.sin(S.gamma))} ≈ D = ${fmtKN(S.D)}</div>`,
+  },
+];
+const TOUR = { active: false, i: 0 };
+function selectChart(k) { document.querySelector(`#charts .tabs button[data-chart="${k}"]`)?.click(); }
+function startTour(i) {
+  TOUR.active = true; $('tour').hidden = false;
+  $('tourDots').innerHTML = STEPS.map((_, k) => `<i data-k="${k}"></i>`).join('');
+  $('tourDots').querySelectorAll('i').forEach((d) => d.addEventListener('click', () => tourGo(+d.dataset.k)));
+  tourGo(i);
+}
+function tourGo(i) {
+  if (i < 0 || i >= STEPS.length) return;
+  TOUR.i = i; STEPS[i].enter();
+  $('tourTitle').textContent = STEPS[i].title;
+  $('tourStep').textContent = `${i + 1} / ${STEPS.length}`;
+  $('tourPrev').disabled = i === 0;
+  $('tourNext').textContent = i === STEPS.length - 1 ? '終了 ✓' : '次へ ▶';
+  $('tourDots').querySelectorAll('i').forEach((d, k) => d.classList.toggle('on', k === i));
+  $('tourBody').innerHTML = STEPS[i].body();
+}
+function endTour() { TOUR.active = false; $('tour').hidden = true; }
+$('tourPrev').addEventListener('click', () => tourGo(TOUR.i - 1));
+$('tourNext').addEventListener('click', () => (TOUR.i === STEPS.length - 1 ? endTour() : tourGo(TOUR.i + 1)));
+$('tourClose').addEventListener('click', endTour);
+
+/* ---------------------------------------------------------------------
+ * 18. セルフテスト（物理）＋ GPU 速度場と CPU パネル法の一致確認
+ * ------------------------------------------------------------------- */
+function gpuFieldTest() {
+  if (!FLOAT_RT || !FIELD.near.rt) return { name: 'GPU 速度場 = CPU パネル法（誘導速度）', ok: true, detail: 'スキップ（float レンダーターゲット非対応）' };
+  const pts = [[-0.12, 0.18], [0.3, 0.16], [0.62, -0.1], [0.85, 0.09], [1.25, -0.05], [0.05, -0.08]];
+  const rt = new THREE.WebGLRenderTarget(pts.length, 1, { type: THREE.FloatType, depthBuffer: false });
+  const U = fieldUniforms();
+  U.uNaca.value.set(aircraft.foil.m, aircraft.foil.p, aircraft.foil.t);
+  U.uPts = { value: pts.map(([x, y]) => new THREE.Vector2(x, y)) };
+  const mat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3, uniforms: U, vertexShader: QUAD_VS,
+    fragmentShader: `precision highp float; precision highp sampler2D;\n${GLSL_FIELD}\nuniform vec2 uPts[${pts.length}];
+      layout(location = 0) out vec4 o;
+      void main(){ vec2 q = uPts[int(gl_FragCoord.x)]; o = vec4(secPert(q, 1.0, 0.0, 0.0), secPert(q, 0.0, 1.0, 0.0)); }`,
+  });
+  const sc = new THREE.Scene(); sc.add(new THREE.Mesh(quadGeo, mat));
+  renderer.setRenderTarget(rt); renderer.render(sc, quadCam); renderer.setRenderTarget(null);
+  const buf = new Float32Array(pts.length * 4);
+  renderer.readRenderTargetPixels(rt, 0, 0, pts.length, 1, buf);
+  const pn = aircraft.panel, v = [0, 0];
+  let err = 0;
+  pts.forEach(([x, y], i) => {
+    pn.velocityAt(x, y, pn.g0, 0, v); err = Math.max(err, Math.abs(v[0] - 1 - buf[i * 4]), Math.abs(v[1] - buf[i * 4 + 1]));
+    pn.velocityAt(x, y, pn.g90, Math.PI / 2, v); err = Math.max(err, Math.abs(v[0] - Math.cos(Math.PI / 2) - buf[i * 4 + 2]), Math.abs(v[1] - 1 - buf[i * 4 + 3]));
+  });
+  rt.dispose(); mat.dispose();
+  return { name: 'GPU 速度場 = CPU パネル法（誘導速度）', ok: err < 0.02, detail: `最大誤差 ${err.toExponential(2)}（V∞ 比）` };
+}
+function runTests() {
+  let res;
+  try { res = SelfTest.run(); } catch (e) { res = [{ name: 'SelfTest 実行', ok: false, detail: String(e) }]; }
+  try { res.push(gpuFieldTest()); } catch (e) { res.push({ name: 'GPU 速度場テスト', ok: false, detail: String(e) }); }
+  const nOk = res.filter((r) => r.ok).length;
+  $('testTable').innerHTML = res.map((r) => `<tr><td class="s ${r.ok ? 'ok' : 'ng'}">${r.ok ? '✓' : '✗'}</td><td>${r.name}</td><td class="d num">${r.detail}</td></tr>`).join('');
+  const b = $('btnTest');
+  b.textContent = `セルフテスト ${nOk === res.length ? '✓' : '✗'} ${nOk}/${res.length}`;
+  b.classList.add(nOk === res.length ? 'ok' : 'ng');
+  console.groupCollapsed(`AeroLab セルフテスト: ${nOk}/${res.length} 合格`);
+  console.table(res.map((r) => ({ 結果: r.ok ? '✓' : '✗', 項目: r.name, 詳細: r.detail })));
+  console.groupEnd();
+}
+
+/* ---------------------------------------------------------------------
+ * 19. 性能の自動調整（粒子数の段階を fps で上げ下げ）
+ * ------------------------------------------------------------------- */
+const PERF = { frames: 0, t: 0, fps: 60, good: 0, cap: TIERS.length - 1 };
+function perfSample(dtRaw) {
+  if (dtRaw > 0.25) return;                 // タブ切替などの長い停止は無視
+  PERF.frames++; PERF.t += dtRaw;
+  if (PERF.t < 1.5) return;
+  PERF.fps = PERF.frames / PERF.t; PERF.frames = 0; PERF.t = 0;
+  if (P.quality !== 'auto') return;
+  if (PERF.fps < 36 && PARTS.tier > 0) { PERF.cap = PARTS.tier - 1; setTier(PARTS.tier - 1); PERF.good = 0; }
+  else if (PERF.fps < 28 && PARTS.tier === 0 && renderer.getPixelRatio() > 1) renderer.setPixelRatio(Math.max(1, renderer.getPixelRatio() - 0.5));
+  else if (PERF.fps > 56) { if (++PERF.good >= 3 && PARTS.tier < PERF.cap) { setTier(PARTS.tier + 1); PERF.good = 0; } }
+  else PERF.good = 0;
+}
+
+/* ---------------------------------------------------------------------
+ * 20. 毎フレームの処理
+ * ------------------------------------------------------------------- */
+function stepPhysics(dt) {
+  if (P.mode === 'tunnel') { sim.setTunnel(P.alpha * DEG, P.V); return; }
+  physAcc += dt;
+  let n = 0;
+  while (physAcc >= PHYS_DT && n < 48) { sim.step(PHYS_DT); physAcc -= PHYS_DT; n++; }
+  if (n >= 48) physAcc = 0;
+  while (sim.events.length) {
+    const e = sim.events.shift();
+    if (e === 'liftoff') toast('離陸！ 揚力 L が重量 W を上回りました');
+    if (e === 'touchdown' && P.mode === 'glide') { toast(`接地（滑空距離 ${fmt(sim.s[0] / 1000, 2)} km）→ 再スタート`); setMode('glide'); }
+  }
+  if (P.mode === 'powered' && sim.s[1] > 2500) { toast('高度 2,500 m に到達 → リセット'); setMode('powered'); }
+}
+
+function updateForces() {
+  forceGroup.visible = LAYERS.forces && P.view === '3d';
+  if (!forceGroup.visible) return;
+  const k = (0.34 * aircraft.wing.b) / S.W, g = S.gamma, th = S.theta, O = new THREE.Vector3(0, 0, 0);
+  FA.L.set(O, new THREE.Vector3(Math.sin(g), Math.cos(g), 0), S.L * k);
+  FA.D.set(O, new THREE.Vector3(Math.cos(g), -Math.sin(g), 0), S.D * k);
+  FA.W.set(O, new THREE.Vector3(0, -1, 0), S.W * k);
+  FA.T.set(O, new THREE.Vector3(-Math.cos(th), Math.sin(th), 0), S.T * k);
+  const lb = [['L', '揚力 L', S.L], ['D', '抗力 D', S.D], ['W', '重力 W', S.W], ['T', '推力 T', S.T]];
+  const o = O.clone().project(cam3D);
+  for (const [key, name, F] of lb) {
+    if (!FA[key].group.visible) continue;
+    const t = FA[key].tip.clone().project(cam3D), dx = (t.x - o.x) * innerWidth, dy = (t.y - o.y) * innerHeight;
+    const anc = Math.abs(dy) > Math.abs(dx) ? (dy > 0 ? 'top' : 'bottom') : dx > 0 ? 'right' : 'left';
+    label('f' + key, FA[key].tip, cam3D, `${name} ${fmtKN(F)}`, key, anc);
+  }
+}
+
+function updateEnv() {
+  const flight = P.mode !== 'tunnel';
+  envGroup.visible = flight && LAYERS.env;
+  if (!envGroup.visible) return;
+  const z = sim.s[1], th = S.theta, xAc = sim.s[0];
+  const gY = -z - (z < 0.5 ? 0.3 * Math.sin(th) + GEAR_H * Math.cos(th) : GEAR_H);
+  ground.position.y = gY;
+  runway.position.set(xAc - 720, gY + 0.02, 0);
+  groundMat.uniforms.uXac.value = xAc % 2000;
+  for (const c of clouds) {
+    const X = (((xAc - c.x) % 8000) + 12000) % 8000 - 4000;
+    c.sp.position.set(X, c.h - z + gY + z, c.z);
+  }
+}
+
+let lastT = performance.now(), hudTimer = 0, infoTimer = 0, tourTimer = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dtRaw = (now - lastT) / 1000; lastT = now;
+  const dtR = Math.min(dtRaw, 0.1);
+  let dtS = P.paused ? 0 : dtR * P.timeScale;
+  if (stepOnce > 0) { dtS = stepOnce; stepOnce = 0; }
+
+  // --- 物理（固定刻み 120 Hz, RK4） ---
+  stepPhysics(dtS);
+  S = sim.evaluate(sim.s, S);
+
+  // --- 物理結果 → 描画 ---
+  acGroup.rotation.z = -S.theta;
+  updateAeroVisuals();
+  updateSection();
+  updateForces();
+  updateEnv();
+  const T = S.T;
+  propGroup.rotation.x += dtS * (P.mode === 'glide' ? 5 : 20 + T / 60);
+  propDisc.material.opacity = clamp(T / 6000, 0, 0.3);
+
+  const view3 = P.view === '3d';
+  wakeGroup.visible = view3;
+  vortexGroup.visible = LAYERS.vortex; dwGroup.visible = LAYERS.downwash; gammaGroup.visible = LAYERS.gamma;
+  vortexTimer -= dtR;
+  if (view3 && LAYERS.vortex && vortexDirty && vortexTimer <= 0) { rebuildVortexLines(); vortexDirty = false; vortexTimer = 0.25; }
+
+  // --- GPU 粒子 ---
+  const nacaV = [aircraft.foil.m, aircraft.foil.p, aircraft.foil.t];
+  if (view3) {
+    const ps = LAYERS.particles ? getParticles('3d') : null;
+    if (PARTS.p3) PARTS.p3.mesh.visible = !!ps;
+    if (ps) {
+      const w = aircraft.wing, b = w.b, u = ps.u, a = S.alpha;
+      u.uDir.value.set(Math.cos(a), Math.sin(a));
+      u.uHalfSpan.value = b / 2; u.uCroot.value = w.cRoot; u.uNaca.value.set(...nacaV);
+      u.uDomMin.value.set(-(0.6 * w.cRoot + 2.5), -0.32 * b, -0.75 * b);
+      u.uDomMax.value.set(1.7 * b, 0.32 * b, 0.75 * b);
+      u.uU.value = U3D_PER_B * b; u.uMaxAge.value = 60;
+      if (u.uNF.value === 0 && wake.fil.length) lastAeroKey = NaN;
+      ps.compute(dtS);
+      const r = ps.renderMat.uniforms;
+      r.uU.value = U3D_PER_B * b; r.uTrail.value = 0.14; r.uWidth.value = 0.017 * Math.max(1, b / 11); r.uAlpha.value = 0.75; r.uFaint.value = 0.1;
+      r.uColorMode.value = P.colorMode === 'cp' ? 0 : 1;
+    }
+  } else {
+    const ps = LAYERS.particles ? getParticles('2d') : null;
+    if (PARTS.p2) PARTS.p2.mesh.visible = !!ps;
+    if (ps) {
+      const u = ps.u, a = secState.a;
+      u.uDir.value.set(Math.cos(a), Math.sin(a)); u.uCa.value = Math.cos(a); u.uSa.value = Math.sin(a);
+      u.uDG.value = secState.dG; u.uF.value = secState.f; u.uSide.value = a >= 0 ? 1 : -1;
+      u.uNaca.value.set(...nacaV);
+      u.uDomMin.value.set(-1.35, -1.0, -1); u.uDomMax.value.set(3.1, 1.0, 1);
+      u.uU.value = U2D; u.uMaxAge.value = 25;
+      ps.compute(dtS);
+      const r = ps.renderMat.uniforms;
+      r.uU.value = U2D; r.uTrail.value = 0.32; r.uWidth.value = 0.0026; r.uAlpha.value = 0.85; r.uFaint.value = 0.32;
+      r.uColorMode.value = P.colorMode === 'cp' ? 0 : 1;
+    }
+    smokeGroup.visible = LAYERS.smoke;
+    if (LAYERS.smoke) { smoke.step(dtS); smoke.draw(); }
+    if (SEC.arrows) SEC.arrows.visible = LAYERS.pArrows;
+    if (SEC.ribbon) SEC.ribbon.visible = LAYERS.cp;
+    // 断面の揚力・抗力（風軸：風は水平）と一様流の矢印
+    const kL = 0.28;
+    SA.L.set(0.25, 0, 0, secState.cl >= 0 ? 1 : -1, Math.abs(secState.cl) * kL);
+    SA.D.set(0.25, 0, 1, 0, secState.cd * kL * 10);
+    const vx = ctlSec.target.x + camSec.left / camSec.zoom + 0.06, vy = ctlSec.target.y + camSec.top / camSec.zoom - (innerWidth > 900 ? 0.42 : 0.62) / camSec.zoom;
+    SA.V.set(vx, vy, 1, 0, 0.28 / camSec.zoom);
+    label('sL', SA.L.tip, camSec, `揚力 Cl = ${fmt(secState.cl, 2)}`, 'L');
+    label('sD', SA.D.tip, camSec, `抗力 Cd = ${fmt(secState.cd, 3)}（×10 表示）`, 'D', 'right');
+    label('sV', SA.V.tip, camSec, 'V∞（風）', 'plain', 'right');
+    label('sA', new THREE.Vector3(-0.08, -0.05, 0), camSec, `α = ${fmt(secState.a / DEG, 1)}°`, 'plain');
+    if (SEC.stag) label('sS', SEC.stag.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(-0.02, -0.05, 0)), camSec, 'よどみ点', 'dim');
+    if (LAYERS.smoke) label('sTE', new THREE.Vector3(1, 0.2, 0).applyMatrix4(secFoil.matrixWorld), camSec, '後縁', 'dim');
+  }
+
+  // --- HUD・グラフ・情報（間引いて更新） ---
+  hudTimer -= dtR; infoTimer -= dtR; chartTimer -= dtR; tourTimer -= dtR;
+  if (hudTimer <= 0) { updateHUD(); hudTimer = 0.1; }
+  if (infoTimer <= 0) { const h = infoHTML(); if ($('info')._h !== h) { $('info').innerHTML = h; $('info')._h = h; } infoTimer = 0.2; }
+  if (chartTimer <= 0 && LAYERS.charts && !$('charts').classList.contains('collapsed')) { updateCharts(); chartTimer = 0.2; }
+  if (TOUR.active && tourTimer <= 0) { $('tourBody').innerHTML = STEPS[TOUR.i].body(); tourTimer = 0.5; }
+  const slow = P.view === '3d' ? S.V / (U3D_PER_B * aircraft.wing.b) : S.V / (U2D * aircraft.wing.mac);
+  $('perf').textContent = `${(TIERS[PARTS.tier][0] * TIERS[PARTS.tier][1]).toLocaleString()} 粒子 · ${PERF.fps.toFixed(0)} fps`
+    + (S.V > 1 ? ` · 流れの表示は実際の約 1/${fmt(slow * (1 / Math.max(P.timeScale, 1e-3)), 0)} の速さ` : '');
+
+  // --- カメラと描画 ---
+  updateTween(dtR);
+  if (view3) {
+    ctl3D.update(); sky.position.copy(cam3D.position);
+    renderer.render(scene3D, cam3D);
+  } else {
+    ctlSec.update();
+    renderer.render(sceneSec, camSec);
+  }
+  flushLabels();
+  perfSample(dtRaw);
+}
+
+/** 縦長の画面では視野角を広げ、翼幅が画面に収まるようにする */
+function fit3DCamera() {
+  const a = innerWidth / innerHeight;
+  cam3D.aspect = a; cam3D.fov = a < 0.8 ? 64 : a < 1.2 ? 54 : 45; cam3D.updateProjectionMatrix();
+}
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  fit3DCamera();
+  fitSecCamera(); layoutVars();
+});
+
+/* ---------------------------------------------------------------------
+ * 21. 起動
+ * ------------------------------------------------------------------- */
+buildWing(); bakeField(); buildSection();
+fit3DCamera();
+syncUI();
+requestAnimationFrame(frame);
+setTimeout(runTests, 400);
+// 授業・デバッグ用：ブラウザのコンソールから状態を確認できる（例 __lab.S().aero.CL）
+window.__lab = { P, S: () => S, sim, aircraft, LAYERS, PARTS, setMode, setView, startTour, tourGo, smoke, charts, setTier, cam3D, ctl3D, camSec, ctlSec, flyTo, dwArrows, vortexGroup, renderer };
+</script>
+</body>
+</html>
